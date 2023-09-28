@@ -6,7 +6,7 @@ KITTYMEMORY_SRC = $(wildcard $(KITTYMEMORY_PATH)/*.cpp)
 ## Example exec
 include $(CLEAR_VARS)
 
-LOCAL_MODULE := KittenEx
+LOCAL_MODULE := AndKittyInjector
 
 # add -DkITTYMEMORY_DEBUG for debug outputs
 LOCAL_CPPFLAGS += -std=c++17 -DkNO_KEYSTONE
