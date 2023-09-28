@@ -1,0 +1,11 @@
+.DS_Store
+
+.vscode/
+
+build/
+
+libs/
+obj/
+
+*.o
+*.obj
