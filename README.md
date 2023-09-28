@@ -8,6 +8,7 @@ Inject from /data for Android
 <h2> Support: </h2>
 
 - [x] Tested on Android 5.0  ~ 13
+- [x] ABI arm, arm64, x86, x86_64
 - [x] Houdini support for emulators 32 & 64 bit
 - [x] Inject emulated arm64 & arm32
 - [x] Bypass android linker namespace restrictions
