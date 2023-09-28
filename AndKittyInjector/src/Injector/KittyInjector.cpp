@@ -4,6 +4,15 @@ bool KittyInjector::init(pid_t pid, EKittyMemOP eMemOp)
 {
     _init = false;
 
+    bool isLocal64bit = !KittyMemoryEx::getMapsContain(getpid(), "/lib64/").empty();
+    bool isRemote64bit = !KittyMemoryEx::getMapsContain(pid, "/lib64/").empty();
+    if (isLocal64bit != isRemote64bit)
+    {
+        KITTY_LOGE("KittyInjector: Injector is %sbit but target app is %sbit.",
+                   isLocal64bit ? "64" : "32", isRemote64bit ? "64" : "32");
+        return false;
+    }
+
     if (!_pkMgr.initialize(pid, eMemOp, false))
     {
         KITTY_LOGE("KittyInjector: Failed to initialize kittyMgr.");
@@ -74,7 +83,7 @@ uintptr_t KittyInjector::injectLibrary(std::string libPath, int flags) const
     // check if need emulation
     if (libHdr.e_machine != kNativeEM)
     {
-        KITTY_LOGW("injectLibrary: Library EM is not native.");
+        KITTY_LOGW("injectLibrary: Library EMachine is not native.");
         KITTY_LOGI("injectLibrary: [native=0x%x | lib=0x%x].", kNativeEM, libHdr.e_machine);
         KITTY_LOGI("injectLibrary: Searching for houdini emulation...");
 
@@ -84,20 +93,17 @@ uintptr_t KittyInjector::injectLibrary(std::string libPath, int flags) const
             return 0;
         }
 
-        KITTY_LOGI("injectLibrary: Found houdini.");
-
-        bool supported = false;
+        KITTY_LOGI("injectLibrary: Found houdini version %d.", _nativeBridgeItf.version);
 
         // x86_64 emulates arm64, x86 emulates arm
-        if (_houdiniElf.elfScan.header().e_machine == EM_X86_64)
-            supported = libHdr.e_machine == EM_AARCH64;
-        else if (_houdiniElf.elfScan.header().e_machine == EM_386)
-            supported = libHdr.e_machine == EM_ARM;
-
-        if (!supported)
+        if (_houdiniElf.elfScan.header().e_machine == EM_X86_64 && libHdr.e_machine != EM_AARCH64)
         {
-            KITTY_LOGE("injectLibrary: Found houdini, but library EM does not support emulation.");
-            KITTY_LOGE("injectLibrary: [emulation=0x%x | lib=0x%x].", _houdiniElf.elfScan.header().e_machine, libHdr.e_machine);
+            KITTY_LOGE("injectLibrary: EM_X86_64 should emualte EM_AARCH64.");
+            return 0;
+        }
+        else if (_houdiniElf.elfScan.header().e_machine == EM_386 && libHdr.e_machine != EM_ARM)
+        {
+            KITTY_LOGE("injectLibrary: EM_386 should emualte EM_ARM.");
             return 0;
         }
 
@@ -117,37 +123,74 @@ uintptr_t KittyInjector::injectLibrary(std::string libPath, int flags) const
     }
 
     // allocate remote memory for lib path
-    uintptr_t remote_libPath = _pkMgr.trace.callFunction(_remote_syscall, 7, syscall_mmap_n,
-                                                         nullptr, libPath.length() + 1,
-                                                         PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (!remote_libPath)
+    uintptr_t remoteLibPath = _pkMgr.trace.callFunction(_remote_syscall, 7, syscall_mmap_n,
+                                                        nullptr, libPath.length() + 1,
+                                                        PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (!remoteLibPath)
     {
         KITTY_LOGE("injectLibrary: mmap failed.");
         return 0;
     }
 
-    if (!_pkMgr.writeMemStr(remote_libPath, libPath))
+    if (!_pkMgr.writeMemStr(remoteLibPath, libPath))
     {
         KITTY_LOGE("injectLibrary: Failed to write lib path.");
-        _pkMgr.trace.callFunction(_remote_syscall, 3, syscall_munmap_n, remote_libPath, libPath.length() + 1);
+        _pkMgr.trace.callFunction(_remote_syscall, 3, syscall_munmap_n, remoteLibPath, libPath.length() + 1);
         return 0;
     }
 
     uintptr_t ret = 0;
 
-    if (libHdr.e_machine == kNativeEM) // native dlopen
-        ret = _pkMgr.trace.callFunction(_remote_dlopen, 2, remote_libPath, flags);
-    else if (_nativeBridgeItf.version >= NativeBridgeVersion::kNAMESPACE_VERSION) // bridge loadLibraryExt
+    // native dlopen
+    if (libHdr.e_machine == kNativeEM)
     {
-        // namespace 0 or above 25 will throw not accessible by namespace error.
-        // 1-3 seems to work most of times, above 3 may crash.
+        ret = _pkMgr.trace.callFunction(_remote_dlopen, 2, remoteLibPath, flags);
+    }
+    // bridge dlopen
+    else if (_nativeBridgeItf.version >= NativeBridgeVersion::kNAMESPACE_VERSION)
+    {
+        // houdini version 3 or above will need to check which namespace will work between 1 to 25.
         // if (ns && ns <= 25)
         //    return (char *)&unk_64DF10 + 0xC670 * ns + qword_80C6C8;
-        uintptr_t ns = 1;
-        ret = _pkMgr.trace.callFunction((uintptr_t)_nativeBridgeItf.loadLibraryExt, 3, remote_libPath, flags, ns);
+        auto tryRemoteloadLibraryExt = [&](uint8_t ns_start, uint8_t ns_end) -> uintptr_t
+        {
+            for (uint8_t i = ns_start; i <= ns_end; i++)
+            {
+                uintptr_t result = _pkMgr.trace.callFunction((uintptr_t)_nativeBridgeItf.loadLibraryExt, 3, remoteLibPath, flags, i);
+                if (result && !KittyMemoryEx::getMapsEqual(_pkMgr.processID(), libPath).empty())
+                    return result;
+            }
+            return 0;
+        };
+        switch (_nativeBridgeItf.version)
+        {
+        case NativeBridgeVersion::kVENDOR_NAMESPACE_VERSION:  // not tested
+        case NativeBridgeVersion::kRUNTIME_NAMESPACE_VERSION: // not tested
+        case NativeBridgeVersion::kPRE_ZYGOTE_FORK_VERSION:
+            // namespace 4-5 works mostly
+            ret = tryRemoteloadLibraryExt(1, 5);
+            break;
+        case NativeBridgeVersion::kNAMESPACE_VERSION:
+            // namespace 1-3 works mostly
+            ret = tryRemoteloadLibraryExt(1, 3);
+            break;
+        }
     }
-    else if (_nativeBridgeItf.version >= NativeBridgeVersion::kSIGNAL_VERSION) // bridge loadLibrary
-        ret = _pkMgr.trace.callFunction((uintptr_t)_nativeBridgeItf.loadLibrary, 2, remote_libPath, flags);
+    else if (_nativeBridgeItf.version == NativeBridgeVersion::kSIGNAL_VERSION)
+    {
+        // more reliable on older version of houdini
+        auto libNB = _pkMgr.getElfBaseMap("libnativebridge.so");
+        if (libNB.isValid())
+        {
+            uintptr_t pNbLoadLibrary = libNB.elfScan.findSymbol("_ZN7android23NativeBridgeLoadLibraryEPKci");
+            if (pNbLoadLibrary)
+                ret = _pkMgr.trace.callFunction((uintptr_t)pNbLoadLibrary, 2, remoteLibPath, flags);
+        }
+
+        // fallback
+        if (!ret || KittyMemoryEx::getMapsEqual(_pkMgr.processID(), libPath).empty())
+            ret = _pkMgr.trace.callFunction((uintptr_t)_nativeBridgeItf.loadLibrary, 2, remoteLibPath, flags);
+    }
 
     // check if our lib is in remote process maps
     if (!ret || KittyMemoryEx::getMapsEqual(_pkMgr.processID(), libPath).empty())
@@ -175,7 +218,7 @@ uintptr_t KittyInjector::injectLibrary(std::string libPath, int flags) const
     }
 
     // cleanup
-    _pkMgr.trace.callFunction(_remote_syscall, 3, syscall_munmap_n, remote_libPath, libPath.length() + 1);
+    _pkMgr.trace.callFunction(_remote_syscall, 3, syscall_munmap_n, remoteLibPath, libPath.length() + 1);
 
     _pkMgr.trace.Detach();
 
