@@ -12,6 +12,7 @@ Inject from /data for Android
 - [x] Houdini support for emulators 32 & 64 bit
 - [x] Inject emulated arm64 & arm32
 - [x] Bypass android linker namespace restrictions
+- [x] memfd dlopen support
 
 <h2> How to use: </h2>
 Make sure to chmod +x or 755
