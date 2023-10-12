@@ -2,26 +2,12 @@
 
 #include <KittyMemoryEx/KittyMemoryMgr.hpp>
 
-#include "dlfcn.h"
+#include <dlfcn.h>
+#include <android/dlext.h>
+
 #include "../NativeBridge/NativeBridge.hpp"
 
-// https://syscall.sh/
-
-#ifdef __aarch64__
-#define syscall_mmap_n 222
-#define syscall_munmap_n 215
-#elif __arm__
-#define syscall_mmap_n 192 // mmap2
-#define syscall_munmap_n 91
-#elif __i386__
-#define syscall_mmap_n 192 // mmap2
-#define syscall_munmap_n 91
-#elif __x86_64__
-#define syscall_mmap_n 9
-#define syscall_munmap_n 11
-#else
-#error "Unsupported ABI"
-#endif
+#include "RemoteSyscall.hpp"
 
 #ifdef __aarch64__
 static constexpr ElfW_(Half) kNativeEM = EM_AARCH64;
@@ -35,25 +21,31 @@ static constexpr ElfW_(Half) kNativeEM = EM_X86_64;
 #error "Unsupported ABI"
 #endif
 
+#define kINJ_WAIT usleep(1000)
+
 class KittyInjector
 {
 private:
-    KittyMemoryMgr _pkMgr;
+    std::unique_ptr<KittyMemoryMgr> _kMgr;
 
-    uintptr_t _remote_syscall;
+    RemoteSyscall _remote_syscall;
+
     uintptr_t _remote_dlopen;
+    uintptr_t _remote_dlopen_ext;
     uintptr_t _remote_dlerror;
 
     ElfBaseMap _houdiniElf;
     NativeBridgeCallbacks _nativeBridgeItf;
 
-    bool _init;
-
 public:
-    KittyInjector() : _remote_syscall(0),
-                      _remote_dlopen(0), _remote_dlerror(0), _init(false)
+    KittyInjector() : _remote_dlopen(0), _remote_dlopen_ext(0), _remote_dlerror(0)
     {
         memset(&_nativeBridgeItf, 0, sizeof(NativeBridgeCallbacks));
+    }
+
+    inline bool remoteContainsMap(std::string name) const
+    {
+        return _kMgr.get() && _kMgr->isMemValid() && !KittyMemoryEx::getMapsContain(_kMgr->processID(), name).empty();
     }
 
     /**
@@ -63,5 +55,5 @@ public:
      */
     bool init(pid_t pid, EKittyMemOP eMemOp);
 
-    uintptr_t injectLibrary(std::string libPath, int flags) const;
+    uintptr_t injectLibrary(std::string libPath, int flags);
 };
