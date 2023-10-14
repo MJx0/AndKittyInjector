@@ -2,15 +2,6 @@
 
 bool KittyInjector::init(pid_t pid, EKittyMemOP eMemOp)
 {
-    bool isLocal64bit = !KittyMemoryEx::getMapsContain(getpid(), "/lib64/").empty();
-    bool isRemote64bit = !KittyMemoryEx::getMapsContain(pid, "/lib64/").empty();
-    if (isLocal64bit != isRemote64bit)
-    {
-        KITTY_LOGE("KittyInjector: Injector is %sbit but target app is %sbit.",
-                   isLocal64bit ? "64" : "32", isRemote64bit ? "64" : "32");
-        return false;
-    }
-
     if (_kMgr.get())
         _kMgr.reset();
 
@@ -19,6 +10,15 @@ bool KittyInjector::init(pid_t pid, EKittyMemOP eMemOp)
     if (!_kMgr->initialize(pid, eMemOp, false))
     {
         KITTY_LOGE("KittyInjector: Failed to initialize kittyMgr.");
+        return false;
+    }
+
+    bool isLocal64bit = !KittyMemoryEx::getMapsContain(getpid(), "/lib64/").empty();
+    bool isRemote64bit = !KittyMemoryEx::getMapsContain(pid, "/lib64/").empty();
+    if (isLocal64bit != isRemote64bit)
+    {
+        KITTY_LOGE("KittyInjector: Injector is %sbit but target app is %sbit.",
+                   isLocal64bit ? "64" : "32", isRemote64bit ? "64" : "32");
         return false;
     }
 
@@ -57,7 +57,7 @@ bool KittyInjector::init(pid_t pid, EKittyMemOP eMemOp)
     return true;
 }
 
-uintptr_t KittyInjector::injectLibrary(std::string libPath, int flags)
+uintptr_t KittyInjector::injectLibrary(std::string libPath, int flags, bool use_memfd_dl)
 {
     if (!_kMgr.get() || !_kMgr->isMemValid())
     {
@@ -65,10 +65,16 @@ uintptr_t KittyInjector::injectLibrary(std::string libPath, int flags)
         return 0;
     }
 
-    errno = 0;
-    bool useMemfd = _remote_dlopen_ext && !(syscall(syscall_memfd_create_n) < 0 && errno == ENOSYS);
+    if (!_kMgr->trace.isAttached())
+    {
+        KITTY_LOGE("injectLibrary: Not attached.");
+        return 0;
+    }
 
-    if (!_remote_dlopen && !useMemfd)
+    errno = 0;
+    bool canUseMemfd = use_memfd_dl && _remote_dlopen_ext && !(syscall(syscall_memfd_create_n) < 0 && errno == ENOSYS);
+
+    if (!_remote_dlopen && !canUseMemfd)
     {
         KITTY_LOGE("injectLibrary: remote dlopen not found.");
         return 0;
@@ -126,17 +132,11 @@ uintptr_t KittyInjector::injectLibrary(std::string libPath, int flags)
         }
     }
 
-    if (!_kMgr->trace.Attach())
-    {
-        KITTY_LOGE("injectLibrary: Failed to attach.");
-        return 0;
-    }
-
     uintptr_t remoteLibPath = _remote_syscall.rmmap_str(libPath);
     if (!remoteLibPath)
     {
         KITTY_LOGE("injectLibrary: mmaping lib name failed, errno = %s.",
-                   _remote_syscall.getRemoteError().c_str());
+            _remote_syscall.getRemoteError().c_str());
         return 0;
     }
 
@@ -145,7 +145,7 @@ uintptr_t KittyInjector::injectLibrary(std::string libPath, int flags)
     // native dlopen
     if (libHdr.e_machine == kNativeEM)
     {
-        if (useMemfd)
+        if (canUseMemfd)
         {
             do
             {
@@ -159,7 +159,7 @@ uintptr_t KittyInjector::injectLibrary(std::string libPath, int flags)
 
                 auto libBuf = libFile.toBuffer();
 
-                int rmemfd = _remote_syscall.rmemfd_create(rmemfd_name, MFD_CLOEXEC | MFD_ALLOW_SEALING, libBuf.size());
+                int rmemfd = _remote_syscall.rmemfd_create(rmemfd_name, MFD_CLOEXEC | MFD_ALLOW_SEALING);
                 if (rmemfd <= 0)
                 {
                     KITTY_LOGE("injectLibrary: memfd_create failed, errno = %s.",
@@ -176,16 +176,7 @@ uintptr_t KittyInjector::injectLibrary(std::string libPath, int flags)
                     break;
                 }
 
-                // mmap remote memfd in our process
-                void *rshmem = mmap(nullptr, libBuf.size(), PROT_READ | PROT_WRITE, MAP_SHARED, rmemfdFile.FD(), 0);
-                if (!rshmem)
-                {
-                    KITTY_LOGE("injectLibrary: Failed to map shared memfd file, errno = %s.", strerror(errno));
-                    break;
-                }
-                // copy lib to remote memfd
-                memcpy(rshmem, libBuf.data(), libBuf.size());
-                munmap(rshmem, libBuf.size());
+                libFile.writeToFd(rmemfdFile.FD());
 
                 // restrict further modifications to remote memfd
                 _remote_syscall.rmemfd_seal(rmemfd, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_SEAL);
@@ -205,11 +196,11 @@ uintptr_t KittyInjector::injectLibrary(std::string libPath, int flags)
 
         if (!remoteContainsMap(memfd_rand))
         {
-            if (useMemfd)
+            if (canUseMemfd)
                 KITTY_LOGW("android_dlopen_ext failed, using legacy dlopen...");
 
-            _kMgr->trace.callFunction(_remote_dlopen, 2, remoteLibPath, flags);
-            kINJ_WAIT;
+           _kMgr->trace.callFunction(_remote_dlopen, 2, remoteLibPath, flags);
+           kINJ_WAIT;
         }
     }
     // bridge dlopen
@@ -304,8 +295,6 @@ uintptr_t KittyInjector::injectLibrary(std::string libPath, int flags)
 
     // cleanup
     _remote_syscall.clearAllocatedMaps();
-
-    _kMgr->trace.Detach();
 
     return libBase;
 }

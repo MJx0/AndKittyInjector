@@ -13,11 +13,37 @@ Inject from /data for Android
 - [x] Inject emulated arm64 & arm32
 - [x] Bypass android linker namespace restrictions
 - [x] memfd dlopen support
+- [x] App launch monitor
 
 <h2> How to use: </h2>
 Make sure to chmod +x or 755
 
-./path/to/AndKittyInjector [process name] [library path]
+```
+Usage: ./path/to/AndKittyInjector [-h] [-pkg] [-pid] [-lib] [ options ]
+
+Required arguments:
+   -pkg                Target app package.
+   
+   -lib                Library path to inject.
+
+Optional arguments:
+   -h, --help          show available arguments.
+   
+   -pid                Target app pid.
+   
+   -dl_memfd           Use memfd_create & dlopen_ext to inject library, useful to bypass path restrictions.
+   
+   -watch              Monitor app launch by watching app's apk access then inject, useful if you want to inject as fast as possible.
+   
+   -delay              Set a delay in microseconds before injecting.
+   ```
+<h2>Notes: </h2>
+
+- When using -watch to inject as soon as the target app launches, it is recomended to use -delay as well, especially for emulators.
+
+
+- When using -dl_memfd and it fails then legacy dlopen will be called.
+
 
 <h2>Credits: </h2>
 

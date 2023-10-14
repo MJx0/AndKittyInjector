@@ -1,6 +1,6 @@
 #pragma once
 
-#include <KittyMemoryEx/KittyMemoryMgr.hpp>
+#include <KittyMemoryMgr.hpp>
 
 #include <dlfcn.h>
 #include <android/dlext.h>
@@ -55,5 +55,8 @@ public:
      */
     bool init(pid_t pid, EKittyMemOP eMemOp);
 
-    uintptr_t injectLibrary(std::string libPath, int flags);
+    inline bool attach() { return _kMgr.get() && _kMgr->isMemValid() && _kMgr->trace.Attach(); };
+    inline bool detach() { return _kMgr.get() && _kMgr->isMemValid() && _kMgr->trace.Detach(); }
+
+    uintptr_t injectLibrary(std::string libPath, int flags, bool use_dl_memfd);
 };
