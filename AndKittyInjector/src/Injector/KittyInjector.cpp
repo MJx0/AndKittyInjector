@@ -194,13 +194,22 @@ uintptr_t KittyInjector::injectLibrary(std::string libPath, int flags, bool use_
             } while (false);
         }
 
-        if (!remoteContainsMap(memfd_rand))
-        {
+        if (!remoteContainsMap(memfd_rand)) {
             if (canUseMemfd)
-                KITTY_LOGW("android_dlopen_ext failed, using legacy dlopen...");
+            {
+                KITTY_LOGW("android_dlopen_ext failed.");
+                uintptr_t error_ret = _kMgr->trace.callFunction(_remote_dlerror, 0);
+                if (IsValidRetPtr(error_ret))
+                {
+                    std::string error_str = _kMgr->readMemStr(error_ret, 0xff);
+                    if (!error_str.empty())
+                        KITTY_LOGE("error %s.", error_str.c_str());
+                }
+                KITTY_LOGI("Will try legacy dlopen...");
+            }
 
-           _kMgr->trace.callFunction(_remote_dlopen, 2, remoteLibPath, flags);
-           kINJ_WAIT;
+            _kMgr->trace.callFunction(_remote_dlopen, 2, remoteLibPath, flags);
+            kINJ_WAIT;
         }
     }
     // bridge dlopen

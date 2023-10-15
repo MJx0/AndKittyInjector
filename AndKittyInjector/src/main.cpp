@@ -11,6 +11,8 @@
 #include <chrono>
 #define SLEEP_MICROS(x) { std::this_thread::sleep_for(std::chrono::microseconds(x)); }
 
+#include "am_process_start.hpp"
+
 #include <KittyUtils.hpp>
 
 // parse cmd args
@@ -20,15 +22,18 @@
 #include "Injector/KittyInjector.hpp"
 KittyInjector kitInjector;
 
-uintptr_t   inject_lib          (int pid, const std::string &lib, bool use_memfd);
-std::string get_app_apk         (std::string pkgName);
-void        list_files_callback (const std::string &path, std::function<void(const std::string &)> cb);
-int         sync_watch_callback (const std::string &path, uint32_t mask, std::function<bool(int wd, struct inotify_event* event)> cb);
+uintptr_t   inject_lib                (int pid, const std::string &lib, bool use_memfd);
+int         sync_watch_callback       (const std::string &path, uint32_t mask, std::function<bool(int wd, struct inotify_event* event)> cb);
+int         am_process_start_callback (std::function<bool(const android_event_am_proc_start*)> cb);
 
 bool bHelp = false;
 
+static int inotifyFd = 0;
+
 int main(int argc, char* args[])
 {
+    setlinebuf(stdout);
+
     KittyCmdln cmdline(argc, args);
 
     cmdline.setUsage("Usage: ./path/to/AndKittyInjector [-h] [-pkg] [-pid] [-lib] [ options ]");
@@ -48,7 +53,7 @@ int main(int argc, char* args[])
     cmdline.addFlag("-dl_memfd", "", "Use memfd_create & dlopen_ext to inject library, useful to bypass path restrictions.", false, &use_dl_memfd);
 
     bool use_watch_app = false; // optional
-    cmdline.addFlag("-watch", "", "Monitor app launch by watching app's apk access then inject, useful if you want to inject as fast as possible.", false, &use_watch_app);
+    cmdline.addFlag("-watch", "", "Monitor process launch then inject, useful if you want to inject as fast as possible.", false, &use_watch_app);
 
     unsigned int inj_delay = 0; // optional
     cmdline.addScanf("-delay", "", "Set a delay in microseconds before injecting.", false, "%d", &inj_delay);
@@ -63,6 +68,8 @@ int main(int argc, char* args[])
         KITTY_LOGE("Required arguments missing. see -h.");
         exit(1);
     }
+
+    const int appPkgLen = strlen(appPkg);
 
     if (appPID > 0)
         KITTY_LOGI("Process ID: %d", appPID);
@@ -84,9 +91,6 @@ int main(int argc, char* args[])
 
         injectedLibBase = inject_lib(appPID, libPath, use_dl_memfd);
     }
-    // PTRACE_O_TRACEFORK on zygote is overkill for me xD
-    // instead watch for IN_OPEN event on app's base.apk then inject
-    // if it can't find pid then you may need to use some -delay
     else if (use_watch_app)
     {
         if (KittyMemoryEx::getProcessID(appPkg) > 0)
@@ -95,40 +99,53 @@ int main(int argc, char* args[])
             exit(1);
         }
 
-        std::string appApk = get_app_apk(appPkg);
+        errno = 0;
 
-        KITTY_LOGI("Monitoring %s...", appApk.c_str());
+        inotifyFd = inotify_init1(IN_CLOEXEC);
+        if (inotifyFd < 0) {
+            KITTY_LOGE("Failed to initialize inotify. last error = %s.", strerror(errno));
+            exit(1);
+        }
 
-        int watch = sync_watch_callback(appApk, IN_OPEN, [&](int wd, struct inotify_event* event) -> bool {
-            // check watch descriptors
-            if (wd != event->wd || !(event->mask & IN_OPEN))
+        KITTY_LOGI("Monitoring %s...", appPkg);
+
+        int proc_watch = am_process_start_callback(
+            [&](const android_event_am_proc_start* event) -> bool {
+            if (appPkgLen != event->process_name.length || strncmp(event->process_name.data, appPkg, appPkgLen))
                 return false;
 
-            if (inj_delay > 0)
-                SLEEP_MICROS(inj_delay);
+            // inject on any event that isn't related to fd or timer
+            auto proc_dir = KittyUtils::strfmt("/proc/%d", event->pid.data);
+            int proc_dir_watch = sync_watch_callback(proc_dir, IN_ALL_EVENTS,
+                [&](int wd, struct inotify_event* iev) -> bool {
+                    if (wd != iev->wd)
+                        return false;
 
-            int tries = 0, limit = 1000;
-            do {
-                errno = 0, tries++;
-                appPID = KittyMemoryEx::getProcessID(appPkg);
-                // 1ms each try
-                if (appPID <= 0) { SLEEP_MICROS(1000); }
-                if (tries >= limit) { break; }
-            } while (appPID <= 0);
+                    // skip fd event
+                    if (iev->len >= 2 && *(uint16_t*)iev->name == 0x6466)
+                        return false;
 
-            if (appPID <= 0) {
-                KITTY_LOGE("Couldn't find process id of %s, maybe add -delay.", appPkg);
+                    // skip timerslack event
+                    if (iev->len >= 4 && *(uint32_t*)iev->name == 0x656d6974)
+                        return false;
+
+                    if (inj_delay > 0)
+                        SLEEP_MICROS(inj_delay);
+
+                    injectedLibBase = inject_lib(event->pid.data, libPath, use_dl_memfd);
+                    return true;
+                });
+
+            if (proc_dir_watch == -1) {
+                KITTY_LOGE("Failed to add watch on process directory. last error = %s.", strerror(errno));
                 exit(1);
             }
-
-            injectedLibBase = inject_lib(appPID, libPath, use_dl_memfd);
 
             return true;
         });
 
-        if (watch == -1)
-        {
-            KITTY_LOGE("Failed to add watch on app's apk file.");
+        if (proc_watch == -1) {
+            KITTY_LOGE("Failed to monitor process start. last error = %s.", strerror(errno));
             exit(1);
         }
     }
@@ -184,48 +201,9 @@ uintptr_t inject_lib(int pid, const std::string& lib, bool use_memfd)
     return ret;
 }
 
-std::string get_app_apk(std::string pkgName)
-{
-    if (pkgName[0] != '/')
-        pkgName = '/' + pkgName;
-
-    std::string directory = "/data/app/", apk = "base.apk", ret;
-    list_files_callback(directory, [&](const std::string& filePath) {
-        if (KittyUtils::fileNameFromPath(filePath) == apk) {
-            if (strstr(filePath.c_str(), pkgName.c_str())) {
-                ret = filePath;
-                return true;
-            }
-        }
-        return false;
-    });
-
-    return ret;
-}
-
-void list_files_callback(const std::string &path, std::function<void(const std::string &)> cb)
-{
-    if (auto dir = opendir(path.c_str())) {
-        while (auto f = readdir(dir)) {
-            if (f->d_name[0] == '.') continue;
-            
-            if (f->d_type == DT_DIR) 
-                list_files_callback(path + f->d_name + "/", cb);
-
-            if (f->d_type == DT_REG)
-                cb(path + f->d_name);
-        }
-        closedir(dir);
-    }
-}
-
 int sync_watch_callback(
     const std::string &path, uint32_t mask, std::function<bool(int wd, struct inotify_event* event)> cb)
 {
-    thread_local static int inotifyFd = inotify_init1(IN_CLOEXEC);
-    if (inotifyFd < 0)
-        return -1;
-
     int wd = inotify_add_watch(inotifyFd, path.c_str(), mask);
     
     char buffer[1024] = { 0 };
@@ -247,4 +225,51 @@ int sync_watch_callback(
     }
 
     return 0;
+}
+
+// https://gist.github.com/vvb2060/a3d40084cd9273b65a15f8a351b4eb0e#file-am_proc_start-cpp
+int am_process_start_callback(std::function<bool(const android_event_am_proc_start*)> cb)
+{
+    char log_tag[0xff] = {0};
+    int log_tag_get = __system_property_get("persist.log.tag", log_tag);
+
+    bool first = true;
+    __system_property_set("persist.log.tag", "");
+
+    std::unique_ptr<logger_list, decltype(&android_logger_list_free)> logger_list {
+        android_logger_list_alloc(0, 1, 0), &android_logger_list_free
+    };
+
+    errno = 0;
+    auto* logger = android_logger_open(logger_list.get(), LOG_ID_EVENTS);
+    if (logger == nullptr)
+        return -1;
+
+    int ret = 0;
+    struct log_msg msg { };
+    while (true) {
+        if (android_logger_list_read(logger_list.get(), &msg) <= 0) {
+            ret = -1;
+            break;
+        }
+
+        if (first) {
+            first = false;
+            continue;
+        }
+
+        auto* event_header = reinterpret_cast<const android_event_header_t*>(&msg.buf[msg.entry.hdr_size]);
+        if (event_header->tag != 30014)
+            continue;
+
+        if (cb(reinterpret_cast<const android_event_am_proc_start*>(event_header))) {
+            ret = 1;
+            break;
+        }
+    }
+
+    if (log_tag_get > 0 && log_tag[0] != 0)
+        __system_property_set("persist.log.tag", log_tag);
+
+    return ret;
 }

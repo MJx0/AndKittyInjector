@@ -33,13 +33,13 @@ Optional arguments:
    
    -dl_memfd           Use memfd_create & dlopen_ext to inject library, useful to bypass path restrictions.
    
-   -watch              Monitor app launch by watching app's apk access then inject, useful if you want to inject as fast as possible.
+   -watch              Monitor process launch then inject, useful if you want to inject as fast as possible.
    
    -delay              Set a delay in microseconds before injecting.
    ```
 <h2>Notes: </h2>
 
-- When using -watch to inject as soon as the target app launches, it is recomended to use -delay as well, especially for emulators.
+- When using -watch to inject as soon as the target app launches, you may need to use -delay as well, especially when injecting emulated lib.
 
 
 - When using -dl_memfd and it fails then legacy dlopen will be called.
@@ -52,3 +52,5 @@ Optional arguments:
 [injectvm-binderjack](https://github.com/Chainfire/injectvm-binderjack)
 
 [TinyInjector](https://github.com/shunix/TinyInjector)
+
+[am_proc_start](https://gist.github.com/vvb2060/a3d40084cd9273b65a15f8a351b4eb0e#file-am_proc_start-cpp)
