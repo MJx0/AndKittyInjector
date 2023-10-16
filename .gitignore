@@ -2,6 +2,8 @@
 
 .vscode/
 
+cmake_build/
+
 build/
 
 libs/
