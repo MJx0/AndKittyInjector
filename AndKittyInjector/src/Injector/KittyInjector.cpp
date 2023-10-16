@@ -36,7 +36,9 @@ bool KittyInjector::init(pid_t pid, EKittyMemOP eMemOp)
     }
 
     _remote_dlopen_ext = _kMgr->findRemoteOf("android_dlopen_ext", (uintptr_t)&android_dlopen_ext);
-
+    
+    _remote_dlclose = _kMgr->findRemoteOf("dlclose", (uintptr_t)&dlclose);
+    
     _remote_dlerror = _kMgr->findRemoteOf("dlerror", (uintptr_t)&dlerror);
 
     // check houdini for emulators
@@ -57,18 +59,18 @@ bool KittyInjector::init(pid_t pid, EKittyMemOP eMemOp)
     return true;
 }
 
-uintptr_t KittyInjector::injectLibrary(std::string libPath, int flags, bool use_memfd_dl)
+injected_info_t KittyInjector::injectLibrary(std::string libPath, int flags, bool use_memfd_dl)
 {
     if (!_kMgr.get() || !_kMgr->isMemValid())
     {
         KITTY_LOGE("injectLibrary: Not initialized.");
-        return 0;
+        return {};
     }
 
     if (!_kMgr->trace.isAttached())
     {
         KITTY_LOGE("injectLibrary: Not attached.");
-        return 0;
+        return {};
     }
 
     errno = 0;
@@ -77,7 +79,7 @@ uintptr_t KittyInjector::injectLibrary(std::string libPath, int flags, bool use_
     if (!_remote_dlopen && !canUseMemfd)
     {
         KITTY_LOGE("injectLibrary: remote dlopen not found.");
-        return 0;
+        return {};
     }
 
     ElfW_(Ehdr) libHdr = {};
@@ -86,14 +88,14 @@ uintptr_t KittyInjector::injectLibrary(std::string libPath, int flags, bool use_
     if (!libFile.Open())
     {
         KITTY_LOGE("injectLibrary: Library path not accessible. error=\"%s\"", libFile.lastStrError().c_str());
-        return 0;
+        return {};
     }
     libFile.Read(0, &libHdr, sizeof(libHdr));
 
     if (memcmp(libHdr.e_ident, "\177ELF", 4) != 0)
     {
         KITTY_LOGE("injectLibrary: library is not a valid ELF.");
-        return 0;
+        return {};
     }
 
     // check if need emulation
@@ -106,7 +108,7 @@ uintptr_t KittyInjector::injectLibrary(std::string libPath, int flags, bool use_
         if (!_houdiniElf.isValid())
         {
             KITTY_LOGW("injectLibrary: houdini not available.");
-            return 0;
+            return {};
         }
 
         KITTY_LOGI("injectLibrary: Found houdini version %d.", _nativeBridgeItf.version);
@@ -115,172 +117,30 @@ uintptr_t KittyInjector::injectLibrary(std::string libPath, int flags, bool use_
         if (_houdiniElf.elfScan.header().e_machine == EM_X86_64 && libHdr.e_machine != EM_AARCH64)
         {
             KITTY_LOGE("injectLibrary: EM_X86_64 should emualte EM_AARCH64.");
-            return 0;
+            return {};
         }
         else if (_houdiniElf.elfScan.header().e_machine == EM_386 && libHdr.e_machine != EM_ARM)
         {
             KITTY_LOGE("injectLibrary: EM_386 should emualte EM_ARM.");
-            return 0;
+            return {};
         }
 
         // version check
         if (_nativeBridgeItf.version < NativeBridgeVersion::kMIN_VERSION || _nativeBridgeItf.version > NativeBridgeVersion::kMAX_VERSION)
         {
-            KITTY_LOGW("injectLibrary: invalid houdini version. [Min=%d | Max=%d]",
-                       NativeBridgeVersion::kMIN_VERSION, NativeBridgeVersion::kMAX_VERSION);
-            return 0;
+            KITTY_LOGE("injectLibrary: invalid houdini version. [Min=%d | Max=%d]", NativeBridgeVersion::kMIN_VERSION, NativeBridgeVersion::kMAX_VERSION);
+            return {};
         }
     }
 
-    uintptr_t remoteLibPath = _remote_syscall.rmmap_str(libPath);
-    if (!remoteLibPath)
-    {
-        KITTY_LOGE("injectLibrary: mmaping lib name failed, errno = %s.",
-            _remote_syscall.getRemoteError().c_str());
-        return 0;
-    }
+    injected_info_t injected {};
 
-    std::string memfd_rand = KittyUtils::random_string(KittyUtils::randInt(5, 12));
-
-    // native dlopen
     if (libHdr.e_machine == kNativeEM)
-    {
-        if (canUseMemfd)
-        {
-            do
-            {
-                uintptr_t rmemfd_name = _remote_syscall.rmmap_str(memfd_rand);
-                if (!rmemfd_name)
-                {
-                    KITTY_LOGE("injectLibrary: failed to map memfd_name, errno = %s.",
-                               _remote_syscall.getRemoteError().c_str());
-                    break;
-                }
+        injected = nativeInject(libFile, flags, canUseMemfd);
+    else
+        injected = emuInject(libFile, flags);
 
-                auto libBuf = libFile.toBuffer();
-
-                int rmemfd = _remote_syscall.rmemfd_create(rmemfd_name, MFD_CLOEXEC | MFD_ALLOW_SEALING);
-                if (rmemfd <= 0)
-                {
-                    KITTY_LOGE("injectLibrary: memfd_create failed, errno = %s.",
-                               _remote_syscall.getRemoteError().c_str());
-                    break;
-                }
-
-                std::string rmemfdPath = KittyUtils::strfmt("/proc/%d/fd/%d", _kMgr->processID(), rmemfd);
-                KittyIOFile rmemfdFile(rmemfdPath, O_RDWR);
-                if (!rmemfdFile.Open())
-                {
-                    KITTY_LOGE("injectLibrary: Failed to open remote memfd file, errno = %s.",
-                               rmemfdFile.lastStrError().c_str());
-                    break;
-                }
-
-                libFile.writeToFd(rmemfdFile.FD());
-
-                // restrict further modifications to remote memfd
-                _remote_syscall.rmemfd_seal(rmemfd, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_SEAL);
-
-                android_dlextinfo extinfo;
-                extinfo.flags = ANDROID_DLEXT_USE_LIBRARY_FD;
-                extinfo.library_fd = rmemfd;
-
-                uintptr_t rdlextinfo = _remote_syscall.rmmap_anon(sizeof(android_dlextinfo), PROT_READ | PROT_WRITE);
-                _kMgr->writeMem(rdlextinfo, &extinfo, sizeof(extinfo));
-
-                _kMgr->trace.callFunction(_remote_dlopen_ext, 3, rmemfd_name, flags, rdlextinfo);
-                kINJ_WAIT;
-
-            } while (false);
-        }
-
-        if (!remoteContainsMap(memfd_rand)) {
-            if (canUseMemfd)
-            {
-                KITTY_LOGW("android_dlopen_ext failed.");
-                uintptr_t error_ret = _kMgr->trace.callFunction(_remote_dlerror, 0);
-                if (IsValidRetPtr(error_ret))
-                {
-                    std::string error_str = _kMgr->readMemStr(error_ret, 0xff);
-                    if (!error_str.empty())
-                        KITTY_LOGE("error %s.", error_str.c_str());
-                }
-                KITTY_LOGI("Will try legacy dlopen...");
-            }
-
-            _kMgr->trace.callFunction(_remote_dlopen, 2, remoteLibPath, flags);
-            kINJ_WAIT;
-        }
-    }
-    // bridge dlopen
-    else if (_nativeBridgeItf.version >= NativeBridgeVersion::kNAMESPACE_VERSION)
-    {
-        // houdini version 3 or above will need to check which namespace will work between 1 to 25.
-        // if (ns && ns <= 25)
-        //    return (char *)&unk_64DF10 + 0xC670 * ns + qword_80C6C8;
-        auto tryRemoteloadLibraryExt = [&](uint8_t ns_start, uint8_t ns_end)
-        {
-            for (uint8_t i = ns_start; i <= ns_end; i++)
-            {
-                _kMgr->trace.callFunction((uintptr_t)_nativeBridgeItf.loadLibraryExt, 3, remoteLibPath, flags, i);
-                kINJ_WAIT;
-
-                if (remoteContainsMap(libPath))
-                    break;
-            }
-        };
-        switch (_nativeBridgeItf.version)
-        {
-        case NativeBridgeVersion::kVENDOR_NAMESPACE_VERSION:  // not tested
-        case NativeBridgeVersion::kRUNTIME_NAMESPACE_VERSION: // not tested
-        case NativeBridgeVersion::kPRE_ZYGOTE_FORK_VERSION:
-            // namespace 4-5 works mostly
-            tryRemoteloadLibraryExt(1, 5);
-            break;
-        case NativeBridgeVersion::kNAMESPACE_VERSION:
-            // namespace 1-3 works mostly
-            tryRemoteloadLibraryExt(1, 3);
-            break;
-        }
-    }
-    else if (_nativeBridgeItf.version == NativeBridgeVersion::kSIGNAL_VERSION)
-    {
-        // more reliable on older version of houdini
-        auto libNB = _kMgr->getElfBaseMap("libnativebridge.so");
-        if (libNB.isValid())
-        {
-            uintptr_t pNbLoadLibrary = libNB.elfScan.findSymbol("_ZN7android23NativeBridgeLoadLibraryEPKci");
-            if (pNbLoadLibrary)
-            {
-                _kMgr->trace.callFunction((uintptr_t)pNbLoadLibrary, 2, remoteLibPath, flags);
-                kINJ_WAIT;
-            }
-        }
-
-        // fallback
-        if (!remoteContainsMap(libPath))
-        {
-            _kMgr->trace.callFunction((uintptr_t)_nativeBridgeItf.loadLibrary, 2, remoteLibPath, flags);
-            kINJ_WAIT;
-        }
-    }
-
-    uintptr_t libBase = 0;
-
-    if (remoteContainsMap(libPath))
-    {
-        auto mps = KittyMemoryEx::getMapsContain(_kMgr->processID(), libPath);
-        if (!mps.empty())
-            libBase = mps.front().startAddress;
-    }
-    else if (remoteContainsMap(memfd_rand))
-    {
-        auto mps = KittyMemoryEx::getMapsContain(_kMgr->processID(), memfd_rand);
-        if (!mps.empty())
-            libBase = mps.front().startAddress;
-    }
-
-    if (!libBase)
+    if (!injected.is_valid())
     {
         KITTY_LOGE("injectLibrary: failed )':");
         KITTY_LOGE("injectLibrary: calling dlerror...");
@@ -305,5 +165,178 @@ uintptr_t KittyInjector::injectLibrary(std::string libPath, int flags, bool use_
     // cleanup
     _remote_syscall.clearAllocatedMaps();
 
-    return libBase;
+    return injected;
+}
+
+injected_info_t KittyInjector::nativeInject(KittyIOFile& lib, int flags, bool use_dl_memfd)
+{
+    injected_info_t info {};
+    info.is_native = true;
+
+    auto legacy_dlopen = [&]() -> bool
+    {
+        info.name = lib.Path();
+
+        uintptr_t remoteLibPath = _remote_syscall.rmmap_str(info.name);
+        if (!remoteLibPath)
+        {
+            KITTY_LOGE("nativeInject: mmaping lib name failed, errno = %s.", _remote_syscall.getRemoteError().c_str());
+            return false;
+        }
+
+        info.dl_handle = _kMgr->trace.callFunction(_remote_dlopen, 2, remoteLibPath, flags);
+        kINJ_WAIT;
+
+        info.elfMap = _kMgr->getElfBaseMap(lib.Path());
+
+        return info.elfMap.isValid();
+    };
+
+    auto memfd_dlopen = [&]() -> bool
+    {
+        std::string memfd_rand = KittyUtils::random_string(KittyUtils::randInt(5, 12));
+
+        info.name = memfd_rand;
+
+        uintptr_t rmemfd_name = _remote_syscall.rmmap_str(memfd_rand);
+        if (!rmemfd_name)
+        {
+            KITTY_LOGE("nativeInject: failed to map memfd_name, errno = %s.", _remote_syscall.getRemoteError().c_str());
+            return false;
+        }
+
+        auto libBuf = lib.toBuffer();
+
+        int rmemfd = _remote_syscall.rmemfd_create(rmemfd_name, MFD_CLOEXEC | MFD_ALLOW_SEALING);
+        if (rmemfd <= 0)
+        {
+            KITTY_LOGE("nativeInject: memfd_create failed, errno = %s.", _remote_syscall.getRemoteError().c_str());
+            return false;
+        }
+
+        std::string rmemfdPath = KittyUtils::strfmt("/proc/%d/fd/%d", _kMgr->processID(), rmemfd);
+        KittyIOFile rmemfdFile(rmemfdPath, O_RDWR);
+        if (!rmemfdFile.Open())
+        {
+            KITTY_LOGE("nativeInject: Failed to open remote memfd file, errno = %s.", rmemfdFile.lastStrError().c_str());
+            return false;
+        }
+
+        lib.writeToFd(rmemfdFile.FD());
+
+        // restrict further modifications to remote memfd
+        _remote_syscall.rmemfd_seal(rmemfd, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_SEAL);
+
+        android_dlextinfo extinfo;
+        extinfo.flags = ANDROID_DLEXT_USE_LIBRARY_FD;
+        extinfo.library_fd = rmemfd;
+
+        uintptr_t rdlextinfo = _remote_syscall.rmmap_anon(0, sizeof(android_dlextinfo), PROT_READ | PROT_WRITE);
+        _kMgr->writeMem(rdlextinfo, &extinfo, sizeof(extinfo));
+
+        info.dl_handle = _kMgr->trace.callFunction(_remote_dlopen_ext, 3, rmemfd_name, flags, rdlextinfo);
+        kINJ_WAIT;
+
+        info.elfMap = _kMgr->getElfBaseMap(memfd_rand);
+
+        return info.elfMap.isValid();
+    };
+
+
+    errno = 0;
+    bool canUseMemfd = use_dl_memfd && _remote_dlopen_ext && !(syscall(syscall_memfd_create_n) < 0 && errno == ENOSYS);
+
+    if (canUseMemfd)
+    {
+        if (!memfd_dlopen())
+        {
+            KITTY_LOGW("android_dlopen_ext failed.");
+            uintptr_t error_ret = _kMgr->trace.callFunction(_remote_dlerror, 0);
+            if (IsValidRetPtr(error_ret))
+            {
+                std::string error_str = _kMgr->readMemStr(error_ret, 0xff);
+                if (!error_str.empty())
+                    KITTY_LOGE("error %s.", error_str.c_str());
+            }
+            KITTY_LOGI("Will try legacy dlopen...");
+            legacy_dlopen();
+        }
+    }
+    else
+    {
+        legacy_dlopen();
+    }
+
+    return info;
+}
+
+injected_info_t KittyInjector::emuInject(KittyIOFile& lib, int flags)
+{
+    injected_info_t info {};
+    info.is_native = false;
+    info.name = lib.Path();
+
+    uintptr_t remoteLibPath = _remote_syscall.rmmap_str(info.name);
+    if (!remoteLibPath)
+    {
+        KITTY_LOGE("emuInject: mmaping lib name failed, errno = %s.", _remote_syscall.getRemoteError().c_str());
+        return info;
+    }
+
+    if (_nativeBridgeItf.version >= NativeBridgeVersion::kNAMESPACE_VERSION)
+    {
+        // houdini version 3 or above will need to check which namespace will work between 1 to 25.
+        // if (ns && ns <= 25)
+        //    return (char *)&unk_64DF10 + 0xC670 * ns + qword_80C6C8;
+        auto tryRemoteloadLibraryExt = [&](uint8_t ns_start, uint8_t ns_end) -> uintptr_t
+        {
+            for (uint8_t i = ns_start; i <= ns_end; i++) {
+                uintptr_t h = _kMgr->trace.callFunction((uintptr_t)_nativeBridgeItf.loadLibraryExt, 3, remoteLibPath, flags, i);
+                kINJ_WAIT;
+
+                if (remoteContainsMap(lib.Path()))
+                    return h;
+            }
+            return 0;
+        };
+
+        switch (_nativeBridgeItf.version)
+        {
+            case NativeBridgeVersion::kVENDOR_NAMESPACE_VERSION: // not tested
+            case NativeBridgeVersion::kRUNTIME_NAMESPACE_VERSION: // not tested
+            case NativeBridgeVersion::kPRE_ZYGOTE_FORK_VERSION:
+                // namespace 4-5 works mostly
+                info.dl_handle = tryRemoteloadLibraryExt(1, 5);
+                break;
+            case NativeBridgeVersion::kNAMESPACE_VERSION:
+                // namespace 1-3 works mostly
+                info.dl_handle = tryRemoteloadLibraryExt(1, 3);
+                break;
+        }
+    }
+    else if (_nativeBridgeItf.version == NativeBridgeVersion::kSIGNAL_VERSION)
+    {
+        // more reliable on older version of houdini
+        auto libNB = _kMgr->getElfBaseMap("libnativebridge.so");
+        if (libNB.isValid())
+        {
+            uintptr_t pNbLoadLibrary = libNB.elfScan.findSymbol("_ZN7android23NativeBridgeLoadLibraryEPKci");
+            if (pNbLoadLibrary)
+            {
+                info.dl_handle = _kMgr->trace.callFunction((uintptr_t)pNbLoadLibrary, 2, remoteLibPath, flags);
+                kINJ_WAIT;
+            }
+        }
+
+        // fallback
+        if (!remoteContainsMap(lib.Path()))
+        {
+            info.dl_handle = _kMgr->trace.callFunction((uintptr_t)_nativeBridgeItf.loadLibrary, 2, remoteLibPath, flags);
+            kINJ_WAIT;
+        }
+    }
+
+    info.elfMap = _kMgr->getElfBaseMap(lib.Path());
+
+    return info;
 }

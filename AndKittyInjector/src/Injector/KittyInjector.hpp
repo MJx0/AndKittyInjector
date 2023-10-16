@@ -23,6 +23,18 @@ static constexpr ElfW_(Half) kNativeEM = EM_X86_64;
 
 #define kINJ_WAIT usleep(1000)
 
+struct injected_info_t
+{
+    bool is_native, is_hidden;
+    uintptr_t dl_handle;
+    std::string name;
+    ElfBaseMap elfMap;
+
+    injected_info_t() = default;
+
+    inline bool is_valid() const { return elfMap.isValid(); }
+};
+
 class KittyInjector
 {
 private:
@@ -30,15 +42,13 @@ private:
 
     RemoteSyscall _remote_syscall;
 
-    uintptr_t _remote_dlopen;
-    uintptr_t _remote_dlopen_ext;
-    uintptr_t _remote_dlerror;
+    uintptr_t _remote_dlopen, _remote_dlopen_ext, _remote_dlclose, _remote_dlerror;
 
     ElfBaseMap _houdiniElf;
     NativeBridgeCallbacks _nativeBridgeItf;
 
 public:
-    KittyInjector() : _remote_dlopen(0), _remote_dlopen_ext(0), _remote_dlerror(0)
+    KittyInjector() : _remote_dlopen(0), _remote_dlopen_ext(0), _remote_dlclose(0), _remote_dlerror(0)
     {
         memset(&_nativeBridgeItf, 0, sizeof(NativeBridgeCallbacks));
     }
@@ -58,5 +68,9 @@ public:
     inline bool attach() { return _kMgr.get() && _kMgr->isMemValid() && _kMgr->trace.Attach(); };
     inline bool detach() { return _kMgr.get() && _kMgr->isMemValid() && _kMgr->trace.Detach(); }
 
-    uintptr_t injectLibrary(std::string libPath, int flags, bool use_dl_memfd);
+    injected_info_t injectLibrary(std::string libPath, int flags, bool use_dl_memfd);
+
+private:
+    injected_info_t nativeInject(KittyIOFile& lib, int flags, bool use_dl_memfd);
+    injected_info_t emuInject(KittyIOFile& lib, int flags);
 };
