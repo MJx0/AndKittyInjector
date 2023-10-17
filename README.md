@@ -15,7 +15,7 @@ Inject from /data for Android
 - [x] memfd dlopen support
 - [x] App launch monitor
 - [x] Hide lib segments from /maps
-- [x] Hide lib from linker solist (dladdr & dl_iterate_phdr )
+- [x] Hide lib from linker solist ( dladdr & dl_iterate_phdr )
 
 <h2> How to use: </h2>
 Make sure to chmod +x or 755
@@ -44,7 +44,7 @@ Optional arguments:
 
 <h2>Notes: </h2>
 
-- When using -hide do not use libray constructor, instead define and export a function called hide_init
+- When using -hide do not use library constructor, instead define and export a function called hide_init
 
 ```cpp
 extern "C" __attribute__((used)) void hide_init()
