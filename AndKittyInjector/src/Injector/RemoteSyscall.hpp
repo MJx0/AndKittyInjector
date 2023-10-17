@@ -9,9 +9,8 @@
 #define syscall_munmap_n 215
 #define syscall_memfd_create_n 279
 #elif __arm__
-#define syscall_mprotect_n 125
 #define syscall_fcntl_n 221 // fcntl64
-//#define syscall_fcntl_n 55
+#define syscall_mprotect_n 125
 #define syscall_mmap_n 192 // mmap2
 #define syscall_munmap_n 91
 #define syscall_memfd_create_n 385
@@ -78,8 +77,11 @@ class RemoteSyscall
         if (!_kMgr || !_kMgr->isMemValid())
             return 0;
 
-        intptr_t remoteMem = _kMgr->trace.callFunction(_remote_syscall, 7, syscall_mmap_n,
-                                                       addr, size, prot, MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
+        int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+        if (addr)
+            flags |= MAP_FIXED;
+
+        intptr_t remoteMem = _kMgr->trace.callFunction(_remote_syscall, 7, syscall_mmap_n, addr, size, prot, flags, 0, 0);
         if (!IsValidRetPtr(remoteMem))
             return 0;
 
@@ -89,17 +91,22 @@ class RemoteSyscall
         return remoteMem;
     }
 
-    uintptr_t rmmap_shared(uintptr_t addr, size_t size, int prot, int fd)
+    uintptr_t rmmap_shared(uintptr_t addr, size_t size, int prot, int fd, bool deleteOnClear=true)
     {
         if (!_kMgr || !_kMgr->isMemValid())
             return 0;
 
-        intptr_t remoteMem = _kMgr->trace.callFunction(_remote_syscall, 7, syscall_mmap_n,
-                                                       addr, size, prot, MAP_SHARED, fd, 0);
+        int flags = MAP_SHARED;
+        if (addr)
+            flags |= MAP_FIXED;
+
+        intptr_t remoteMem = _kMgr->trace.callFunction(_remote_syscall, 7, syscall_mmap_n, addr, size, prot, flags, fd, 0);
         if (!IsValidRetPtr(remoteMem))
             return 0;
 
-        vAllocatedMaps[remoteMem] = size;
+        if (deleteOnClear)
+            vAllocatedMaps[remoteMem] = size;
+
         return remoteMem;
     }
 

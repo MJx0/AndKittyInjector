@@ -22,7 +22,7 @@
 #include "Injector/KittyInjector.hpp"
 KittyInjector kitInjector;
 
-injected_info_t inject_lib                (int pid, const std::string &lib, bool use_memfd);
+injected_info_t inject_lib                (int pid, const std::string &lib, bool use_memfd, bool hide_lib);
 int             sync_watch_callback       (const std::string &path, uint32_t mask, std::function<bool(int wd, struct inotify_event* event)> cb);
 int             am_process_start_callback (std::function<bool(const android_event_am_proc_start*)> cb);
 
@@ -30,7 +30,7 @@ bool bHelp = false;
 
 static int inotifyFd = 0;
 
-void watch_proc_inject(const std::string& pkg, const std::string& lib, bool use_dl_memfd, unsigned int inj_delay, injected_info_t* ret);
+void watch_proc_inject(const std::string& pkg, const std::string& lib, bool use_dl_memfd, bool hide_lib, unsigned int inj_delay, injected_info_t* ret);
 
 int main(int argc, char* args[])
 {
@@ -53,6 +53,9 @@ int main(int argc, char* args[])
 
     bool use_dl_memfd = false; // optional
     cmdline.addFlag("-dl_memfd", "", "Use memfd_create & dlopen_ext to inject library, useful to bypass path restrictions.", false, &use_dl_memfd);
+
+    bool hide_lib = false; // optional
+    cmdline.addFlag("-hide", "", "Try to hide lib from /maps and linker solist.", false, &hide_lib);
 
     bool use_watch_app = false; // optional
     cmdline.addFlag("-watch", "", "Monitor process launch then inject, useful if you want to inject as fast as possible.", false, &use_watch_app);
@@ -78,6 +81,7 @@ int main(int argc, char* args[])
     KITTY_LOGI("Library Path: %s", libPath);
 
     KITTY_LOGI("Use memfd dlopen: %d", use_dl_memfd ? 1 : 0);
+    KITTY_LOGI("Hide lib: %d", hide_lib ? 1 : 0);
     KITTY_LOGI("Use app watch: %d", use_watch_app ? 1 : 0);
     KITTY_LOGI("Inject delay: %d", inj_delay);
 
@@ -89,7 +93,7 @@ int main(int argc, char* args[])
         if (inj_delay > 0)
             SLEEP_MICROS(inj_delay);
 
-        injectedLibInfo = inject_lib(appPID, libPath, use_dl_memfd);
+        injectedLibInfo = inject_lib(appPID, libPath, use_dl_memfd, hide_lib);
     }
     else if (use_watch_app)
     {
@@ -108,7 +112,7 @@ int main(int argc, char* args[])
 
         KITTY_LOGI("Monitoring %s...", appPkg);
 
-        watch_proc_inject(appPkg, libPath, use_dl_memfd, inj_delay, &injectedLibInfo);    
+        watch_proc_inject(appPkg, libPath, use_dl_memfd, hide_lib, inj_delay, &injectedLibInfo);
     }
     // find pid and inject
     else
@@ -122,7 +126,7 @@ int main(int argc, char* args[])
             exit(1);
         }
 
-        injectedLibInfo = inject_lib(appPID, libPath, use_dl_memfd);
+        injectedLibInfo = inject_lib(appPID, libPath, use_dl_memfd, hide_lib);
     }
 
     if (!injectedLibInfo.is_valid())
@@ -135,7 +139,7 @@ int main(int argc, char* args[])
     return 0;
 }
 
-injected_info_t inject_lib(int pid, const std::string& lib, bool use_memfd)
+injected_info_t inject_lib(int pid, const std::string& lib, bool use_memfd, bool hide_lib)
 {
     if (pid <= 0)
     {
@@ -156,7 +160,7 @@ injected_info_t inject_lib(int pid, const std::string& lib, bool use_memfd)
     }
 
     kitInjector.attach();
-    injected_info_t ret = kitInjector.injectLibrary(lib, RTLD_NOW|RTLD_LOCAL, use_memfd);
+    injected_info_t ret = kitInjector.injectLibrary(lib, RTLD_NOW|RTLD_LOCAL, use_memfd, hide_lib);
     kitInjector.detach();
 
     return ret;
@@ -247,7 +251,7 @@ int am_process_start_callback(std::function<bool(const android_event_am_proc_sta
 }
 
 void watch_proc_inject(const std::string& pkg, const std::string& lib,
-    bool use_dl_memfd, unsigned int inj_delay, injected_info_t* ret)
+    bool use_dl_memfd, bool hide_lib, unsigned int inj_delay, injected_info_t* ret)
 {    
     int pid = 0;
     int proc_watch = am_process_start_callback([&](const android_event_am_proc_start* event) -> bool {
@@ -296,5 +300,5 @@ void watch_proc_inject(const std::string& pkg, const std::string& lib,
     if (inj_delay > 0)
         SLEEP_MICROS(inj_delay);
 
-    *ret = inject_lib(pid, lib, use_dl_memfd);
+    *ret = inject_lib(pid, lib, use_dl_memfd, hide_lib);
 }

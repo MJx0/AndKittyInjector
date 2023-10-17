@@ -1,5 +1,6 @@
 @ECHO OFF
 
+SET "INJECTOR_ARCH=arm64"
 SET "INJECTOR_NAME=AndKittyInjector"
 SET "INJECTOR_PATH=/data/local/tmp/AndKittyInjector"
 
@@ -14,24 +15,31 @@ ECHO APP = %APP%
 ECHO LIB_ARCH = %LIB_ARCH%
 ECHO LIB_PATH = %LIB_PATH%
 
+ECHO =========== PUSH ===========
+
+IF "%INJECTOR_ARCH%"=="arm" adb push libs/armeabi-v7a/%INJECTOR_NAME% %INJECTOR_PATH%
+IF "%INJECTOR_ARCH%"=="arm64" adb push libs/arm64-v8a/%INJECTOR_NAME% %INJECTOR_PATH%
+IF "%INJECTOR_ARCH%"=="x86" adb push libs/x86/%INJECTOR_NAME% %INJECTOR_PATH%
+IF "%INJECTOR_ARCH%"=="x86_64" adb push libs/x86_64/%INJECTOR_NAME% %INJECTOR_PATH%
+
 IF "%LIB_ARCH%"=="arm" adb push injtest/armeabi-v7a/libinjtest.so %LIB_PATH%
 IF "%LIB_ARCH%"=="arm64" adb push injtest/arm64-v8a/libinjtest.so %LIB_PATH%
 IF "%LIB_ARCH%"=="x86" adb push injtest/x86/libinjtest.so %LIB_PATH%
 IF "%LIB_ARCH%"=="x86_64" adb push injtest/x86_64/libinjtest.so %LIB_PATH%
 
-ECHO =========== INJECTOR ===========
+ECHO =========== INJECT ===========
 
-adb shell "su -c 'kill $(pidof %INJECTOR_PATH%) > /dev/null 2>&1'"
+adb shell "su -c 'kill $(pidof %INJECTOR_NAME%) > /dev/null 2>&1'"
 
 :: exec perm
 adb shell "su -c 'chmod 755 %INJECTOR_PATH%'"
 
-:: using -dl_memfd -watch and -delay 100000 microsecond, 100ms
-adb shell "su -c './%INJECTOR_NAME% -pkg %APP% -lib %LIB_PATH% -dl_memfd -watch -delay 100000'"
+:: using -dl_memfd  -hide -watch and -delay 100000 microsecond, 100ms
+adb shell "su -c './%INJECTOR_PATH% -pkg %APP% -lib %LIB_PATH% -dl_memfd -hide -watch -delay 100000'"
 
 ECHO ========= CHECKING MAPS =========
 
-adb shell "su -c 'cat /proc/$(pgrep -n %APP%)/maps | grep %LIB_PATH%'"
-adb shell "su -c 'cat /proc/$(pgrep -n %APP%)/maps | grep memfd'"
+adb shell "su -c 'cat /proc/$(pidof %APP%)/maps | grep %LIB_PATH%'"
+adb shell "su -c 'cat /proc/$(pidof %APP%)/maps | grep memfd'"
 
 PAUSE

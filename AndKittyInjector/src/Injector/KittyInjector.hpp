@@ -8,6 +8,7 @@
 #include "../NativeBridge/NativeBridge.hpp"
 
 #include "RemoteSyscall.hpp"
+#include "SoInfoPatch.hpp"
 
 #ifdef __aarch64__
 static constexpr ElfW_(Half) kNativeEM = EM_AARCH64;
@@ -47,6 +48,8 @@ private:
     ElfBaseMap _houdiniElf;
     NativeBridgeCallbacks _nativeBridgeItf;
 
+    SoInfoPatch _soinfo_patch;
+
 public:
     KittyInjector() : _remote_dlopen(0), _remote_dlopen_ext(0), _remote_dlclose(0), _remote_dlerror(0)
     {
@@ -68,9 +71,11 @@ public:
     inline bool attach() { return _kMgr.get() && _kMgr->isMemValid() && _kMgr->trace.Attach(); };
     inline bool detach() { return _kMgr.get() && _kMgr->isMemValid() && _kMgr->trace.Detach(); }
 
-    injected_info_t injectLibrary(std::string libPath, int flags, bool use_dl_memfd);
+    injected_info_t injectLibrary(std::string libPath, int flags, bool use_dl_memfd, bool hide);
 
 private:
     injected_info_t nativeInject(KittyIOFile& lib, int flags, bool use_dl_memfd);
     injected_info_t emuInject(KittyIOFile& lib, int flags);
+
+    bool hideSegmentsFromMaps(injected_info_t &inj_info);
 };

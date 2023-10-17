@@ -7,18 +7,19 @@ bool KittyInjector::init(pid_t pid, EKittyMemOP eMemOp)
 
     _kMgr = std::make_unique<KittyMemoryMgr>();
 
-    if (!_kMgr->initialize(pid, eMemOp, false))
+    if (!_kMgr->initialize(pid, eMemOp, true))
     {
         KITTY_LOGE("KittyInjector: Failed to initialize kittyMgr.");
         return false;
     }
 
+    _kMgr->trace.setAutoRestoreRegs(false);
+
     bool isLocal64bit = !KittyMemoryEx::getMapsContain(getpid(), "/lib64/").empty();
     bool isRemote64bit = !KittyMemoryEx::getMapsContain(pid, "/lib64/").empty();
     if (isLocal64bit != isRemote64bit)
     {
-        KITTY_LOGE("KittyInjector: Injector is %sbit but target app is %sbit.",
-                   isLocal64bit ? "64" : "32", isRemote64bit ? "64" : "32");
+        KITTY_LOGE("KittyInjector: Injector is %sbit but target app is %sbit.", isLocal64bit ? "64" : "32", isRemote64bit ? "64" : "32");
         return false;
     }
 
@@ -27,6 +28,8 @@ bool KittyInjector::init(pid_t pid, EKittyMemOP eMemOp)
         KITTY_LOGE("KittyInjector: Failed to initialize remote syscall.");
         return false;
     }
+
+    _soinfo_patch.init(_kMgr.get());
 
     _remote_dlopen = _kMgr->findRemoteOf("dlopen", (uintptr_t)&dlopen);
     if (!_remote_dlopen)
@@ -59,7 +62,7 @@ bool KittyInjector::init(pid_t pid, EKittyMemOP eMemOp)
     return true;
 }
 
-injected_info_t KittyInjector::injectLibrary(std::string libPath, int flags, bool use_memfd_dl)
+injected_info_t KittyInjector::injectLibrary(std::string libPath, int flags, bool use_memfd_dl, bool hide)
 {
     if (!_kMgr.get() || !_kMgr->isMemValid())
     {
@@ -133,14 +136,46 @@ injected_info_t KittyInjector::injectLibrary(std::string libPath, int flags, boo
         }
     }
 
+    pt_regs bkup_regs;
+    memset(&bkup_regs, 0, sizeof(bkup_regs));
+
+    if (!_kMgr->trace.getRegs(&bkup_regs))
+    {
+        KITTY_LOGE("injectLibrary: failed to backup registers.");
+        return {};
+    }
+
     injected_info_t injected {};
 
     if (libHdr.e_machine == kNativeEM)
-        injected = nativeInject(libFile, flags, canUseMemfd);
-    else
-        injected = emuInject(libFile, flags);
+    {
+        if (hide)
+            _soinfo_patch.before_dlopen_patch();
 
-    if (!injected.is_valid())
+        injected = nativeInject(libFile, flags, canUseMemfd);
+
+        if (hide)
+            _soinfo_patch.after_dlopen_patch();
+    }
+    else
+    {
+        injected = emuInject(libFile, flags);
+    }
+
+    KITTY_LOGI("lib handle = %p", (void*)injected.dl_handle);
+
+    if (injected.is_valid())
+    {
+        if (libHdr.e_machine == kNativeEM && hide)
+        {
+            hideSegmentsFromMaps(injected);
+
+            uintptr_t hide_init = injected.elfMap.elfScan.findSymbol("hide_init");
+            KITTY_LOGI("Calling hide_init -> %p", (void*)hide_init);
+            _kMgr->trace.callFunction(hide_init, 0);
+        }
+    }
+    else
     {
         KITTY_LOGE("injectLibrary: failed )':");
         KITTY_LOGE("injectLibrary: calling dlerror...");
@@ -164,6 +199,9 @@ injected_info_t KittyInjector::injectLibrary(std::string libPath, int flags, boo
 
     // cleanup
     _remote_syscall.clearAllocatedMaps();
+
+    if (!_kMgr->trace.setRegs(&bkup_regs))
+        KITTY_LOGE("injectLibrary: failed to restore registers.");
 
     return injected;
 }
@@ -196,7 +234,7 @@ injected_info_t KittyInjector::nativeInject(KittyIOFile& lib, int flags, bool us
     {
         std::string memfd_rand = KittyUtils::random_string(KittyUtils::randInt(5, 12));
 
-        info.name = memfd_rand;
+        info.name = "/memfd:" + memfd_rand;
 
         uintptr_t rmemfd_name = _remote_syscall.rmmap_str(memfd_rand);
         if (!rmemfd_name)
@@ -237,7 +275,7 @@ injected_info_t KittyInjector::nativeInject(KittyIOFile& lib, int flags, bool us
         info.dl_handle = _kMgr->trace.callFunction(_remote_dlopen_ext, 3, rmemfd_name, flags, rdlextinfo);
         kINJ_WAIT;
 
-        info.elfMap = _kMgr->getElfBaseMap(memfd_rand);
+        info.elfMap = _kMgr->getElfBaseMap(info.name);
 
         return info.elfMap.isValid();
     };
@@ -290,7 +328,8 @@ injected_info_t KittyInjector::emuInject(KittyIOFile& lib, int flags)
         //    return (char *)&unk_64DF10 + 0xC670 * ns + qword_80C6C8;
         auto tryRemoteloadLibraryExt = [&](uint8_t ns_start, uint8_t ns_end) -> uintptr_t
         {
-            for (uint8_t i = ns_start; i <= ns_end; i++) {
+            for (uint8_t i = ns_start; i <= ns_end; i++)
+            {
                 uintptr_t h = _kMgr->trace.callFunction((uintptr_t)_nativeBridgeItf.loadLibraryExt, 3, remoteLibPath, flags, i);
                 kINJ_WAIT;
 
@@ -339,4 +378,49 @@ injected_info_t KittyInjector::emuInject(KittyIOFile& lib, int flags)
     info.elfMap = _kMgr->getElfBaseMap(lib.Path());
 
     return info;
+}
+
+bool KittyInjector::hideSegmentsFromMaps(injected_info_t &inj_info)
+{
+    if (!inj_info.is_valid())
+    {
+        KITTY_LOGE("hideSegmentsFromMaps: Invalid info.");
+        return false;
+    }
+
+    if (inj_info.is_hidden || inj_info.elfMap.map.pathname.empty())
+        return true;
+
+    // idea from https://github.com/RikkaApps/Riru/blob/master/riru/src/main/cpp/hide/hide.cpp
+
+    auto maps = KittyMemoryEx::getMapsContain(_kMgr->processID(), inj_info.elfMap.map.pathname);
+    for (auto& it : maps)
+    {
+        KITTY_LOGI("hideSegmentsFromMaps: Hiding segment %p - %p", (void*)it.startAddress, (void*)it.endAddress);
+
+        // backup segment code
+        auto bkup = _kMgr->memBackup.createBackup(it.startAddress, it.length);
+
+        _remote_syscall.rmunmap(it.startAddress, it.length);
+        uintptr_t segment_new_map = _remote_syscall.rmmap_anon(it.startAddress, it.length, it.protection, false);
+
+        if (!IsValidRetPtr(segment_new_map))
+        {
+            KITTY_LOGE("hideSegmentsFromMaps: Failed to re-map segment %p, error = %s", (void*)it.startAddress, _remote_syscall.getRemoteError().c_str());
+            return false;
+        }
+        
+        // restore segment code
+        bkup.Restore();
+    }
+
+    inj_info.name.clear();
+    inj_info.name.shrink_to_fit();
+
+    inj_info.elfMap.map.pathname.clear();
+    inj_info.elfMap.map.pathname.shrink_to_fit();
+
+    inj_info.is_hidden = true;
+
+    return true;
 }

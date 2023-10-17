@@ -14,11 +14,13 @@ Inject from /data for Android
 - [x] Bypass android linker namespace restrictions
 - [x] memfd dlopen support
 - [x] App launch monitor
+- [x] Hide lib segments from /maps
+- [x] Hide lib from linker solist (dladdr & dl_iterate_phdr )
 
 <h2> How to use: </h2>
 Make sure to chmod +x or 755
 
-```
+```text
 Usage: ./path/to/AndKittyInjector [-h] [-pkg] [-pid] [-lib] [ options ]
 
 Required arguments:
@@ -32,18 +34,28 @@ Optional arguments:
    -pid                Target app pid.
    
    -dl_memfd           Use memfd_create & dlopen_ext to inject library, useful to bypass path restrictions.
+
+   -hide               Try to hide lib from /maps and linker solist.
    
    -watch              Monitor process launch then inject, useful if you want to inject as fast as possible.
    
    -delay              Set a delay in microseconds before injecting.
    ```
+
 <h2>Notes: </h2>
+
+- When using -hide do not use libray constructor, instead define and export a function called hide_init
+
+```cpp
+extern "C" __attribute__((used)) void hide_init()
+{
+    // will be called after hide complete.
+}
+```
 
 - When using -watch to inject as soon as the target app launches, you may need to use -delay as well, especially when injecting emulated lib.
 
-
 - When using -dl_memfd and it fails then legacy dlopen will be called.
-
 
 <h2>Credits: </h2>
 
