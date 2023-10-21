@@ -10,6 +10,7 @@ SET "APP=com.kiloo.subwaysurf"
 SET "LIB_ARCH=arm64"
 SET "LIB_PATH=/data/local/tmp/injtest.so"
 
+ECHO INJECTOR_PATH = %INJECTOR_PATH%
 ECHO INJECTOR_ARCH = %INJECTOR_ARCH%
 ECHO APP = %APP%
 ECHO LIB_ARCH = %LIB_ARCH%
@@ -34,8 +35,10 @@ adb shell "su -c 'kill $(pidof %INJECTOR_NAME%) > /dev/null 2>&1'"
 :: exec perm
 adb shell "su -c 'chmod 755 %INJECTOR_PATH%'"
 
-:: using -dl_memfd  -hide -watch and -delay 100000 microsecond, 100ms
-adb shell "su -c './%INJECTOR_PATH% -pkg %APP% -lib %LIB_PATH% -dl_memfd -hide -watch -delay 100000'"
+:: using -dl_memfd -hide -watch
+:: native injection might not need -delay when using -watch
+:: unless you try to inject emulated lib x86_64 -> arm64 / x86 -> arm
+adb shell "su -c './%INJECTOR_PATH% -pkg %APP% -lib %LIB_PATH% -dl_memfd -hide -watch'"
 
 ECHO ========= CHECKING MAPS =========
 

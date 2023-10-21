@@ -25,12 +25,13 @@ KittyInjector kitInjector;
 injected_info_t inject_lib                (int pid, const std::string &lib, bool use_memfd, bool hide_lib);
 int             sync_watch_callback       (const std::string &path, uint32_t mask, std::function<bool(int wd, struct inotify_event* event)> cb);
 int             am_process_start_callback (std::function<bool(const android_event_am_proc_start*)> cb);
+void            watch_proc_inject         (const std::string& pkg, const std::string& lib, bool use_dl_memfd, bool hide_lib, unsigned int inj_delay, injected_info_t* ret);
 
 bool bHelp = false;
 
 static int inotifyFd = 0;
 
-void watch_proc_inject(const std::string& pkg, const std::string& lib, bool use_dl_memfd, bool hide_lib, unsigned int inj_delay, injected_info_t* ret);
+std::chrono::duration<double, std::milli> inj_ms {};
 
 int main(int argc, char* args[])
 {
@@ -135,6 +136,9 @@ int main(int argc, char* args[])
         exit(1);
     }
 
+    if (inj_ms.count() > 0)
+        KITTY_LOGI("Injection took %f MS.", inj_ms.count());
+
     KITTY_LOGI("Injection successed.");
     return 0;
 }
@@ -147,21 +151,27 @@ injected_info_t inject_lib(int pid, const std::string& lib, bool use_memfd, bool
         return {};
     }
 
-    // stop target app then take our sweet time to initialize injector
+    // ptrace attach will stop one thread in target process
+    // use kill to stop the whole process instead
     bool stopped = kill(pid, SIGSTOP) != -1;
-    bool init = kitInjector.init(pid, EK_MEM_OP_IO);
+
+    injected_info_t ret {};
+    if (kitInjector.init(pid, EK_MEM_OP_SYSCALL))
+    {
+        kitInjector.attach();
+
+        auto tm_start = std::chrono::high_resolution_clock::now();
+
+        ret = kitInjector.injectLibrary(lib, RTLD_NOW | RTLD_LOCAL, use_memfd, hide_lib);
+
+        inj_ms = std::chrono::high_resolution_clock::now()-tm_start;
+
+        kitInjector.detach();
+    } else
+        KITTY_LOGE("Couldn't initialize injector.");
+
     if (stopped)
         kill(pid, SIGCONT);
-
-    if (!init)
-    {
-        KITTY_LOGE("Couldn't initialize injector.");
-        return {};
-    }
-
-    kitInjector.attach();
-    injected_info_t ret = kitInjector.injectLibrary(lib, RTLD_NOW|RTLD_LOCAL, use_memfd, hide_lib);
-    kitInjector.detach();
 
     return ret;
 }
@@ -235,6 +245,7 @@ int am_process_start_callback(std::function<bool(const android_event_am_proc_sta
         }
 
         auto* event_header = reinterpret_cast<const android_event_header_t*>(&msg.buf[msg.entry.hdr_size]);
+
         if (event_header->tag != 30014)
             continue;
 
@@ -274,9 +285,7 @@ void watch_proc_inject(const std::string& pkg, const std::string& lib,
     // inject on any event that isn't related to fd or timer
     auto proc_dir = KittyUtils::strfmt("/proc/%d", pid);
     int proc_dir_watch = sync_watch_callback(proc_dir, IN_ALL_EVENTS,
-        [&](int wd, struct inotify_event* iev) -> bool {
-            if (wd != iev->wd)
-                return false;
+        [&](int, struct inotify_event* iev) -> bool {
 
             // skip fd event
             if (iev->len >= 2 && *(uint16_t*)iev->name == 0x6466)
@@ -288,6 +297,11 @@ void watch_proc_inject(const std::string& pkg, const std::string& lib,
 
             return true;
         });
+
+    // maybe check cmdline if zygote or <preinitalized>
+    // std::string cmdline;
+    // KittyIOFile::readFileToString(KittyUtils::strfmt("/proc/%d/cmdline", pid), &cmdline);
+    // KITTY_LOGI("cmdline %s", cmdline.c_str());
 
     if (proc_dir_watch < 0) {
         KITTY_LOGE("Failed to add watch on process directory. last error = %s.", strerror(errno));
