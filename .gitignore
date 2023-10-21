@@ -1,5 +1,7 @@
 .DS_Store
 
+.cache/
+
 .vscode/
 
 cmake_build/
