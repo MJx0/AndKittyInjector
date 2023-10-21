@@ -130,7 +130,7 @@ class RemoteSyscall
         return _kMgr->trace.callFunction(_remote_syscall, 4, syscall_mprotect_n, ptr, size, prot);
     }
 
-    uintptr_t rmmap_str(std::string str)
+    uintptr_t rmmap_str(std::string str, bool deleteOnClear=true)
     {
         if (!_kMgr || !_kMgr->isMemValid())
             return false;
@@ -147,7 +147,9 @@ class RemoteSyscall
             return 0;
         }
 
-        vAllocatedMaps[remoteMem] = str.size() + 1;
+        if (deleteOnClear)
+            vAllocatedMaps[remoteMem] = str.size() + 1;
+
         return remoteMem;
     }
 
