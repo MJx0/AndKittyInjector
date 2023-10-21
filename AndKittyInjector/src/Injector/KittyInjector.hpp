@@ -22,13 +22,10 @@ static constexpr ElfW_(Half) kNativeEM = EM_X86_64;
 #error "Unsupported ABI"
 #endif
 
-#define kINJ_WAIT usleep(1000)
-
 struct injected_info_t
 {
     bool is_native, is_hidden;
     uintptr_t dl_handle;
-    std::string name;
     ElfBaseMap elfMap;
 
     injected_info_t() = default;

@@ -29,8 +29,6 @@ bool KittyInjector::init(pid_t pid, EKittyMemOP eMemOp)
         return false;
     }
 
-    _soinfo_patch.init(_kMgr.get());
-
     _remote_dlopen = _kMgr->findRemoteOf("dlopen", (uintptr_t)&dlopen);
     if (!_remote_dlopen)
     {
@@ -58,6 +56,8 @@ bool KittyInjector::init(pid_t pid, EKittyMemOP eMemOp)
             _kMgr->readMem(pNativeBridgeItf, &_nativeBridgeItf, bridgeCallbacksSize);
         }
     }
+
+    _soinfo_patch.init(_kMgr.get());
 
     return true;
 }
@@ -153,26 +153,35 @@ injected_info_t KittyInjector::injectLibrary(std::string libPath, int flags, boo
             _soinfo_patch.before_dlopen_patch();
 
         injected = nativeInject(libFile, flags, canUseMemfd);
-
-        if (hide)
-            _soinfo_patch.after_dlopen_patch();
     }
     else
     {
         injected = emuInject(libFile, flags);
     }
 
-    KITTY_LOGI("lib handle = %p", (void*)injected.dl_handle);
+    KITTY_LOGI("injectLibrary: lib handle = %p", (void*)injected.dl_handle);
 
     if (injected.is_valid())
     {
         if (libHdr.e_machine == kNativeEM && hide)
         {
-            hideSegmentsFromMaps(injected);
+            // restore when dlopen success
+            _soinfo_patch.after_dlopen_patch();
 
-            uintptr_t hide_init = injected.elfMap.elfScan.findSymbol("hide_init");
-            KITTY_LOGI("Calling hide_init -> %p", (void*)hide_init);
-            _kMgr->trace.callFunction(hide_init, 0);
+            // this works too but it's a bit slower
+            //_soinfo_patch.solist_remove_lib(injected.elfMap.map.startAddress);
+
+            if (hideSegmentsFromMaps(injected)) {
+                uintptr_t hide_init = injected.elfMap.elfScan.findSymbol("hide_init");
+                if (hide_init) {
+                    KITTY_LOGI("injectLibrary: Calling hide_init -> (%p).", (void*)hide_init);
+                    _kMgr->trace.callFunction(hide_init, 0);
+                } else {
+                    KITTY_LOGW("injectLibrary: Failed to find hide_init.");
+                }
+            } else {
+                KITTY_LOGW("injectLibrary: Failed to hide lib segments from /maps.");
+            }
         }
     }
     else
@@ -213,9 +222,7 @@ injected_info_t KittyInjector::nativeInject(KittyIOFile& lib, int flags, bool us
 
     auto legacy_dlopen = [&]() -> bool
     {
-        info.name = lib.Path();
-
-        uintptr_t remoteLibPath = _remote_syscall.rmmap_str(info.name);
+        uintptr_t remoteLibPath = _remote_syscall.rmmap_str(lib.Path());
         if (!remoteLibPath)
         {
             KITTY_LOGE("nativeInject: mmaping lib name failed, errno = %s.", _remote_syscall.getRemoteError().c_str());
@@ -223,7 +230,6 @@ injected_info_t KittyInjector::nativeInject(KittyIOFile& lib, int flags, bool us
         }
 
         info.dl_handle = _kMgr->trace.callFunction(_remote_dlopen, 2, remoteLibPath, flags);
-        kINJ_WAIT;
 
         info.elfMap = _kMgr->getElfBaseMap(lib.Path());
 
@@ -233,17 +239,12 @@ injected_info_t KittyInjector::nativeInject(KittyIOFile& lib, int flags, bool us
     auto memfd_dlopen = [&]() -> bool
     {
         std::string memfd_rand = KittyUtils::random_string(KittyUtils::randInt(5, 12));
-
-        info.name = "/memfd:" + memfd_rand;
-
         uintptr_t rmemfd_name = _remote_syscall.rmmap_str(memfd_rand);
         if (!rmemfd_name)
         {
             KITTY_LOGE("nativeInject: failed to map memfd_name, errno = %s.", _remote_syscall.getRemoteError().c_str());
             return false;
         }
-
-        auto libBuf = lib.toBuffer();
 
         int rmemfd = _remote_syscall.rmemfd_create(rmemfd_name, MFD_CLOEXEC | MFD_ALLOW_SEALING);
         if (rmemfd <= 0)
@@ -273,18 +274,13 @@ injected_info_t KittyInjector::nativeInject(KittyIOFile& lib, int flags, bool us
         _kMgr->writeMem(rdlextinfo, &extinfo, sizeof(extinfo));
 
         info.dl_handle = _kMgr->trace.callFunction(_remote_dlopen_ext, 3, rmemfd_name, flags, rdlextinfo);
-        kINJ_WAIT;
 
-        info.elfMap = _kMgr->getElfBaseMap(info.name);
+        info.elfMap = _kMgr->getElfBaseMap("/memfd:" + memfd_rand);
 
         return info.elfMap.isValid();
     };
 
-
-    errno = 0;
-    bool canUseMemfd = use_dl_memfd && _remote_dlopen_ext && !(syscall(syscall_memfd_create_n) < 0 && errno == ENOSYS);
-
-    if (canUseMemfd)
+    if (use_dl_memfd)
     {
         if (!memfd_dlopen())
         {
@@ -312,9 +308,8 @@ injected_info_t KittyInjector::emuInject(KittyIOFile& lib, int flags)
 {
     injected_info_t info {};
     info.is_native = false;
-    info.name = lib.Path();
 
-    uintptr_t remoteLibPath = _remote_syscall.rmmap_str(info.name);
+    uintptr_t remoteLibPath = _remote_syscall.rmmap_str(lib.Path());
     if (!remoteLibPath)
     {
         KITTY_LOGE("emuInject: mmaping lib name failed, errno = %s.", _remote_syscall.getRemoteError().c_str());
@@ -331,7 +326,6 @@ injected_info_t KittyInjector::emuInject(KittyIOFile& lib, int flags)
             for (uint8_t i = ns_start; i <= ns_end; i++)
             {
                 uintptr_t h = _kMgr->trace.callFunction((uintptr_t)_nativeBridgeItf.loadLibraryExt, 3, remoteLibPath, flags, i);
-                kINJ_WAIT;
 
                 if (remoteContainsMap(lib.Path()))
                     return h;
@@ -363,7 +357,6 @@ injected_info_t KittyInjector::emuInject(KittyIOFile& lib, int flags)
             if (pNbLoadLibrary)
             {
                 info.dl_handle = _kMgr->trace.callFunction((uintptr_t)pNbLoadLibrary, 2, remoteLibPath, flags);
-                kINJ_WAIT;
             }
         }
 
@@ -371,7 +364,6 @@ injected_info_t KittyInjector::emuInject(KittyIOFile& lib, int flags)
         if (!remoteContainsMap(lib.Path()))
         {
             info.dl_handle = _kMgr->trace.callFunction((uintptr_t)_nativeBridgeItf.loadLibrary, 2, remoteLibPath, flags);
-            kINJ_WAIT;
         }
     }
 
@@ -413,9 +405,6 @@ bool KittyInjector::hideSegmentsFromMaps(injected_info_t &inj_info)
         // restore segment code
         bkup.Restore();
     }
-
-    inj_info.name.clear();
-    inj_info.name.shrink_to_fit();
 
     inj_info.elfMap.map.pathname.clear();
     inj_info.elfMap.map.pathname.shrink_to_fit();
