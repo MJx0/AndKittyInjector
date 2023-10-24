@@ -53,11 +53,11 @@ class RemoteSyscall
         
         _kMgr = kMgr;
 
-        _remote_syscall = _kMgr->findRemoteOf("syscall", (uintptr_t)&syscall);
+        _remote_syscall = _kMgr->findRemoteOfSymbol(KT_LOCAL_SYMBOL(syscall));
         if (!_remote_syscall)
             return false;
 
-        _remote_errno = _kMgr->findRemoteOf("__errno", (uintptr_t)&__errno);
+        _remote_errno = _kMgr->findRemoteOfSymbol(KT_LOCAL_SYMBOL(__errno));
 
         return true;
     }

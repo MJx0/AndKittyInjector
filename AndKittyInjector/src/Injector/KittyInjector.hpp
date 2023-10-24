@@ -26,7 +26,7 @@ struct injected_info_t
 {
     bool is_native, is_hidden;
     uintptr_t dl_handle;
-    ElfBaseMap elfMap;
+    BaseElfMap elfMap;
 
     injected_info_t() = default;
 
@@ -42,7 +42,7 @@ private:
 
     uintptr_t _remote_dlopen, _remote_dlopen_ext, _remote_dlclose, _remote_dlerror;
 
-    ElfBaseMap _houdiniElf;
+    BaseElfMap _houdiniElf;
     NativeBridgeCallbacks _nativeBridgeItf;
 
     SoInfoPatch _soinfo_patch;

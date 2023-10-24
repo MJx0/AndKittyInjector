@@ -64,7 +64,7 @@ class SoInfoPatch
         
         _kMgr = kMgr;
 
-        _linker_map = _kMgr->getElfBaseMap("/linker").map;
+        _linker_map = _kMgr->getBaseElfMap("/linker").map;
         if (!_linker_map.isValid())
             return false;
 

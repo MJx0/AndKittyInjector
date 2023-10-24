@@ -29,25 +29,25 @@ bool KittyInjector::init(pid_t pid, EKittyMemOP eMemOp)
         return false;
     }
 
-    _remote_dlopen = _kMgr->findRemoteOf("dlopen", (uintptr_t)&dlopen);
+    _remote_dlopen = _kMgr->findRemoteOfSymbol(KT_LOCAL_SYMBOL(dlopen));
     if (!_remote_dlopen)
     {
         KITTY_LOGE("KittyInjector: remote dlopen not found.");
         return false;
     }
 
-    _remote_dlopen_ext = _kMgr->findRemoteOf("android_dlopen_ext", (uintptr_t)&android_dlopen_ext);
+    _remote_dlopen_ext = _kMgr->findRemoteOfSymbol(KT_LOCAL_SYMBOL(android_dlopen_ext));
     
-    _remote_dlclose = _kMgr->findRemoteOf("dlclose", (uintptr_t)&dlclose);
+    _remote_dlclose = _kMgr->findRemoteOfSymbol(KT_LOCAL_SYMBOL(dlclose));
     
-    _remote_dlerror = _kMgr->findRemoteOf("dlerror", (uintptr_t)&dlerror);
+    _remote_dlerror = _kMgr->findRemoteOfSymbol(KT_LOCAL_SYMBOL(dlerror));
 
     // check houdini for emulators
-    _houdiniElf = _kMgr->getElfBaseMap(kNativeBridgeLib);
+    _houdiniElf = _kMgr->getBaseElfMap(kNativeBridgeLib);
     if (_houdiniElf.isValid())
     {
         // find and read native bridge interface
-        uintptr_t pNativeBridgeItf = _houdiniElf.elfScan.findSymbol(kNativeBridgeSymbol);
+        uintptr_t pNativeBridgeItf = _houdiniElf.elf.findSymbol(kNativeBridgeSymbol);
         if (pNativeBridgeItf)
         {
             _kMgr->readMem(pNativeBridgeItf, &_nativeBridgeItf.version, sizeof(uint32_t));
@@ -117,12 +117,12 @@ injected_info_t KittyInjector::injectLibrary(std::string libPath, int flags, boo
         KITTY_LOGI("injectLibrary: Found houdini version %d.", _nativeBridgeItf.version);
 
         // x86_64 emulates arm64, x86 emulates arm
-        if (_houdiniElf.elfScan.header().e_machine == EM_X86_64 && libHdr.e_machine != EM_AARCH64)
+        if (_houdiniElf.elf.header().e_machine == EM_X86_64 && libHdr.e_machine != EM_AARCH64)
         {
             KITTY_LOGE("injectLibrary: EM_X86_64 should emualte EM_AARCH64.");
             return {};
         }
-        else if (_houdiniElf.elfScan.header().e_machine == EM_386 && libHdr.e_machine != EM_ARM)
+        else if (_houdiniElf.elf.header().e_machine == EM_386 && libHdr.e_machine != EM_ARM)
         {
             KITTY_LOGE("injectLibrary: EM_386 should emualte EM_ARM.");
             return {};
@@ -172,7 +172,7 @@ injected_info_t KittyInjector::injectLibrary(std::string libPath, int flags, boo
             //_soinfo_patch.solist_remove_lib(injected.elfMap.map.startAddress);
 
             if (hideSegmentsFromMaps(injected)) {
-                uintptr_t hide_init = injected.elfMap.elfScan.findSymbol("hide_init");
+                uintptr_t hide_init = injected.elfMap.elf.findSymbol("hide_init");
                 if (hide_init) {
                     KITTY_LOGI("injectLibrary: Calling hide_init -> (%p).", (void*)hide_init);
                     _kMgr->trace.callFunction(hide_init, 0);
@@ -231,7 +231,7 @@ injected_info_t KittyInjector::nativeInject(KittyIOFile& lib, int flags, bool us
 
         info.dl_handle = _kMgr->trace.callFunction(_remote_dlopen, 2, remoteLibPath, flags);
 
-        info.elfMap = _kMgr->getElfBaseMap(lib.Path());
+        info.elfMap = _kMgr->getBaseElfMap(lib.Path());
 
         return info.elfMap.isValid();
     };
@@ -275,7 +275,7 @@ injected_info_t KittyInjector::nativeInject(KittyIOFile& lib, int flags, bool us
 
         info.dl_handle = _kMgr->trace.callFunction(_remote_dlopen_ext, 3, rmemfd_name, flags, rdlextinfo);
 
-        info.elfMap = _kMgr->getElfBaseMap("/memfd:" + memfd_rand);
+        info.elfMap = _kMgr->getBaseElfMap("/memfd:" + memfd_rand);
 
         return info.elfMap.isValid();
     };
@@ -350,10 +350,10 @@ injected_info_t KittyInjector::emuInject(KittyIOFile& lib, int flags)
     else if (_nativeBridgeItf.version == NativeBridgeVersion::kSIGNAL_VERSION)
     {
         // more reliable on older version of houdini
-        auto libNB = _kMgr->getElfBaseMap("libnativebridge.so");
+        auto libNB = _kMgr->getBaseElfMap("libnativebridge.so");
         if (libNB.isValid())
         {
-            uintptr_t pNbLoadLibrary = libNB.elfScan.findSymbol("_ZN7android23NativeBridgeLoadLibraryEPKci");
+            uintptr_t pNbLoadLibrary = libNB.elf.findSymbol("_ZN7android23NativeBridgeLoadLibraryEPKci");
             if (pNbLoadLibrary)
             {
                 info.dl_handle = _kMgr->trace.callFunction((uintptr_t)pNbLoadLibrary, 2, remoteLibPath, flags);
@@ -367,7 +367,7 @@ injected_info_t KittyInjector::emuInject(KittyIOFile& lib, int flags)
         }
     }
 
-    info.elfMap = _kMgr->getElfBaseMap(lib.Path());
+    info.elfMap = _kMgr->getBaseElfMap(lib.Path());
 
     return info;
 }
