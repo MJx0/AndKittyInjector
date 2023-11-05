@@ -43,11 +43,11 @@ bool KittyInjector::init(pid_t pid, EKittyMemOP eMemOp)
     _remote_dlerror = _kMgr->findRemoteOfSymbol(KT_LOCAL_SYMBOL(dlerror));
 
     // check houdini for emulators
-    _houdiniElf = _kMgr->getBaseElfMap(kNativeBridgeLib);
+    _houdiniElf = _kMgr->getMemElf(kNativeBridgeLib);
     if (_houdiniElf.isValid())
     {
         // find and read native bridge interface
-        uintptr_t pNativeBridgeItf = _houdiniElf.elf.findSymbol(kNativeBridgeSymbol);
+        uintptr_t pNativeBridgeItf = _houdiniElf.findSymbol(kNativeBridgeSymbol);
         if (pNativeBridgeItf)
         {
             _kMgr->readMem(pNativeBridgeItf, &_nativeBridgeItf.version, sizeof(uint32_t));
@@ -117,12 +117,12 @@ injected_info_t KittyInjector::injectLibrary(std::string libPath, int flags, boo
         KITTY_LOGI("injectLibrary: Found houdini version %d.", _nativeBridgeItf.version);
 
         // x86_64 emulates arm64, x86 emulates arm
-        if (_houdiniElf.elf.header().e_machine == EM_X86_64 && libHdr.e_machine != EM_AARCH64)
+        if (_houdiniElf.header().e_machine == EM_X86_64 && libHdr.e_machine != EM_AARCH64)
         {
             KITTY_LOGE("injectLibrary: EM_X86_64 should emualte EM_AARCH64.");
             return {};
         }
-        else if (_houdiniElf.elf.header().e_machine == EM_386 && libHdr.e_machine != EM_ARM)
+        else if (_houdiniElf.header().e_machine == EM_386 && libHdr.e_machine != EM_ARM)
         {
             KITTY_LOGE("injectLibrary: EM_386 should emualte EM_ARM.");
             return {};
@@ -172,7 +172,7 @@ injected_info_t KittyInjector::injectLibrary(std::string libPath, int flags, boo
             //_soinfo_patch.solist_remove_lib(injected.elfMap.map.startAddress);
 
             if (hideSegmentsFromMaps(injected)) {
-                uintptr_t hide_init = injected.elfMap.elf.findSymbol("hide_init");
+                uintptr_t hide_init = injected.elf.findSymbol("hide_init");
                 if (hide_init) {
                     KITTY_LOGI("injectLibrary: Calling hide_init -> (%p).", (void*)hide_init);
                     _kMgr->trace.callFunction(hide_init, 0);
@@ -231,9 +231,9 @@ injected_info_t KittyInjector::nativeInject(KittyIOFile& lib, int flags, bool us
 
         info.dl_handle = _kMgr->trace.callFunction(_remote_dlopen, 2, remoteLibPath, flags);
 
-        info.elfMap = _kMgr->getBaseElfMap(lib.Path());
+        info.elf = _kMgr->getMemElf(lib.Path());
 
-        return info.elfMap.isValid();
+        return info.elf.isValid();
     };
 
     auto memfd_dlopen = [&]() -> bool
@@ -275,9 +275,9 @@ injected_info_t KittyInjector::nativeInject(KittyIOFile& lib, int flags, bool us
 
         info.dl_handle = _kMgr->trace.callFunction(_remote_dlopen_ext, 3, rmemfd_name, flags, rdlextinfo);
 
-        info.elfMap = _kMgr->getBaseElfMap("/memfd:" + memfd_rand);
+        info.elf = _kMgr->getMemElf("/memfd:" + memfd_rand);
 
-        return info.elfMap.isValid();
+        return info.elf.isValid();
     };
 
     if (use_dl_memfd)
@@ -350,10 +350,10 @@ injected_info_t KittyInjector::emuInject(KittyIOFile& lib, int flags)
     else if (_nativeBridgeItf.version == NativeBridgeVersion::kSIGNAL_VERSION)
     {
         // more reliable on older version of houdini
-        auto libNB = _kMgr->getBaseElfMap("libnativebridge.so");
+        auto libNB = _kMgr->getMemElf("libnativebridge.so");
         if (libNB.isValid())
         {
-            uintptr_t pNbLoadLibrary = libNB.elf.findSymbol("_ZN7android23NativeBridgeLoadLibraryEPKci");
+            uintptr_t pNbLoadLibrary = libNB.findSymbol("_ZN7android23NativeBridgeLoadLibraryEPKci");
             if (pNbLoadLibrary)
             {
                 info.dl_handle = _kMgr->trace.callFunction((uintptr_t)pNbLoadLibrary, 2, remoteLibPath, flags);
@@ -367,7 +367,7 @@ injected_info_t KittyInjector::emuInject(KittyIOFile& lib, int flags)
         }
     }
 
-    info.elfMap = _kMgr->getBaseElfMap(lib.Path());
+    info.elf = _kMgr->getMemElf(lib.Path());
 
     return info;
 }
@@ -380,12 +380,12 @@ bool KittyInjector::hideSegmentsFromMaps(injected_info_t &inj_info)
         return false;
     }
 
-    if (inj_info.is_hidden || inj_info.elfMap.map.pathname.empty())
+    if (inj_info.is_hidden || inj_info.elf.filePath().empty())
         return true;
 
     // idea from https://github.com/RikkaApps/Riru/blob/master/riru/src/main/cpp/hide/hide.cpp
 
-    auto maps = KittyMemoryEx::getMapsContain(_kMgr->processID(), inj_info.elfMap.map.pathname);
+    auto maps = KittyMemoryEx::getMapsContain(_kMgr->processID(), inj_info.elf.filePath());
     for (auto& it : maps)
     {
         KITTY_LOGI("hideSegmentsFromMaps: Hiding segment %p - %p", (void*)it.startAddress, (void*)it.endAddress);
@@ -405,9 +405,6 @@ bool KittyInjector::hideSegmentsFromMaps(injected_info_t &inj_info)
         // restore segment code
         bkup.Restore();
     }
-
-    inj_info.elfMap.map.pathname.clear();
-    inj_info.elfMap.map.pathname.shrink_to_fit();
 
     inj_info.is_hidden = true;
 

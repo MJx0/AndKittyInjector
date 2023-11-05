@@ -45,7 +45,7 @@ class SoInfoPatch
 
     KittyMemoryMgr *_kMgr;
 
-    ProcMap _linker_map {};
+    ElfScanner _linker_elf {};
 
     uintptr_t solist_offset = 0;
     uintptr_t sonext_offset = 0;
@@ -64,11 +64,11 @@ class SoInfoPatch
         
         _kMgr = kMgr;
 
-        _linker_map = _kMgr->getBaseElfMap("/linker").map;
-        if (!_linker_map.isValid())
+        _linker_elf = _kMgr->getMemElf("/linker");
+        if (!_linker_elf.isValid())
             return false;
 
-        void* dl_linker = xdl_open(_linker_map.pathname.c_str(), XDL_TRY_FORCE_LOAD);
+        void* dl_linker = xdl_open(_linker_elf.filePath().c_str(), XDL_TRY_FORCE_LOAD);
 
         ElfW(Sym) solist_sym{}, sonext_sym{};
         xdl_dsym(dl_linker, "__dl__ZL6solist", &solist_sym);
@@ -85,7 +85,7 @@ class SoInfoPatch
         KITTY_LOGI("SoInfoPatch: soinfo->next offset = 0x%X.", soinfo_next_offset);
 
 #if 0
-        uintptr_t sonext_addr = _linker_map.startAddress + sonext_offset;
+        uintptr_t sonext_addr = _linker_elf.base() + sonext_offset;
         uintptr_t sonext = 0;
         if (!_kMgr->readMem(sonext_addr, &sonext, sizeof(uintptr_t)) || !sonext)
         {
@@ -126,7 +126,7 @@ class SoInfoPatch
 
         KITTY_LOGI("SoInfoPatch: Using sonext patch");
 
-        uintptr_t sonext_addr = _linker_map.startAddress + sonext_offset;
+        uintptr_t sonext_addr = _linker_elf.base() + sonext_offset;
         sonext_bkup.ptr = _kMgr->memBackup.createBackup(sonext_addr, sizeof(uintptr_t));
         
         uintptr_t sonext_ptr = 0;
@@ -176,11 +176,11 @@ class SoInfoPatch
 
     bool solist_remove_lib(uintptr_t lib_base)
     {
-        uintptr_t solist_addr = _linker_map.startAddress + solist_offset;
+        uintptr_t solist_addr = _linker_elf.base() + solist_offset;
         uintptr_t solist = 0;
         _kMgr->readMem(solist_addr, &solist, sizeof(uintptr_t));
 
-        uintptr_t sonext_addr = _linker_map.startAddress + sonext_offset;
+        uintptr_t sonext_addr = _linker_elf.base() + sonext_offset;
         uintptr_t sonext = 0;
         _kMgr->readMem(sonext_addr, &sonext, sizeof(uintptr_t));
 
