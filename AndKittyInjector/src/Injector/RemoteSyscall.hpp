@@ -3,24 +3,28 @@
 // https://syscall.sh/
 
 #ifdef __aarch64__
+#define syscall_prctl_n 167
 #define syscall_fcntl_n 25
 #define syscall_mprotect_n 226
 #define syscall_mmap_n 222
 #define syscall_munmap_n 215
 #define syscall_memfd_create_n 279
 #elif __arm__
+#define syscall_prctl_n 172
 #define syscall_fcntl_n 221 // fcntl64
 #define syscall_mprotect_n 125
 #define syscall_mmap_n 192 // mmap2
 #define syscall_munmap_n 91
 #define syscall_memfd_create_n 385
 #elif __i386__
+#define syscall_prctl_n 172
 #define syscall_fcntl_n 55
 #define syscall_mprotect_n 125
 #define syscall_mmap_n 192 // mmap2
 #define syscall_munmap_n 91
 #define syscall_memfd_create_n 356
 #elif __x86_64__
+#define syscall_prctl_n 157
 #define syscall_fcntl_n 72
 #define syscall_mprotect_n 10
 #define syscall_mmap_n 9
@@ -168,6 +172,15 @@ class RemoteSyscall
 
         return _kMgr->trace.callFunction(_remote_syscall, 4, syscall_fcntl_n, rmemfd, F_ADD_SEALS, seals);
     }
+
+    int rprctl(int option, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
+    {
+        if (!_kMgr || !_kMgr->isMemValid())
+            return 0;
+
+        return _kMgr->trace.callFunction(_remote_syscall, 6, syscall_prctl_n, option, arg2, arg3, arg4, arg5);
+    }
+
 
     std::string getRemoteError()
     {
