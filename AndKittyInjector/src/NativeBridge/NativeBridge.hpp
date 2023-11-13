@@ -4,7 +4,8 @@
 #include <cstdint>
 #include <string>
 
-static constexpr const char *kNativeBridgeLib = "libhoudini.so";
+static constexpr const char *kNB_Houdini = "libhoudini.so";
+static constexpr const char *kNB_NdkTr  = "libndk_translation.so";
 
 // The symbol name exposed by native-bridge with the type of NativeBridgeCallbacks.
 static constexpr const char *kNativeBridgeSymbol = "NativeBridgeItf";
@@ -27,9 +28,12 @@ namespace NativeBridgeVersion
     static constexpr uint32_t kRUNTIME_NAMESPACE_VERSION = 5;
     // The version with pre-zygote-fork hook to support app-zygotes.
     static constexpr uint32_t kPRE_ZYGOTE_FORK_VERSION = 6;
+    // The version with critical_native support
+    static constexpr uint32_t kCRITICAL_NATIVE_SUPPORT_VERSION = 7;
+
 
     static constexpr uint32_t kMIN_VERSION = kSIGNAL_VERSION;
-    static constexpr uint32_t kMAX_VERSION = kPRE_ZYGOTE_FORK_VERSION;
+    static constexpr uint32_t kMAX_VERSION = kCRITICAL_NATIVE_SUPPORT_VERSION;
 };
 
 enum class NativeBridgeState
@@ -52,6 +56,11 @@ struct NativeBridgeRuntimeValues
 };
 
 typedef bool (*NativeBridgeSignalHandlerFn)(int, void *, void *);
+
+enum JNICallType {
+    kJNICallTypeRegular = 1,
+    kJNICallTypeCriticalNative = 2,
+};
 
 struct NativeBridgeCallbacks
 {
@@ -268,6 +277,25 @@ struct NativeBridgeCallbacks
     // required to clean-up the environment before the fork (see b/146904103).
     void (*preZygoteFork)();
 
+    // This replaces previous getTrampoline call starting with version 7 of the
+    // interface.
+    //
+    // Get a native bridge trampoline for specified native method. The trampoline
+    // has same signature as the native method.
+    //
+    // Parameters:
+    //   handle [IN] the handle returned from loadLibrary
+    //   shorty [IN] short descriptor of native method
+    //   len [IN] length of shorty
+    //   jni_call_type [IN] the type of JNI call
+    // Returns:
+    //   address of trampoline if successful, otherwise NULL
+    void* (*getTrampolineWithJNICallType)(void* handle,
+        const char* name,
+        const char* shorty,
+        uint32_t len,
+        enum JNICallType jni_call_type);
+
     static inline size_t getStructSize(uint32_t version)
     {
         switch (version)
@@ -282,6 +310,8 @@ struct NativeBridgeCallbacks
             return sizeof(uintptr_t) * 17;
         case NativeBridgeVersion::kPRE_ZYGOTE_FORK_VERSION:
             return sizeof(uintptr_t) * 18;
+        case NativeBridgeVersion::kCRITICAL_NATIVE_SUPPORT_VERSION:
+            return sizeof(uintptr_t) * 19;
         default:
             return sizeof(uint32_t);
         }

@@ -1,16 +1,15 @@
 # AndKittyInjector
 
-Shared library injector based on ptrace with help of [KittyMemoryEx](https://github.com/MJx0/KittyMemoryEx).
+Android shared library injector based on ptrace with help of [KittyMemoryEx](https://github.com/MJx0/KittyMemoryEx).
 
 Requires C++11 or above.</br>
 Inject from /data for Android
 
 <h2> Support: </h2>
 
-- [x] Tested on Android 5.0  ~ 13
+- [x] Tested on Android 5.0  ~ 14
 - [x] ABI arm, arm64, x86, x86_64
-- [x] Houdini support for emulators 32 & 64 bit
-- [x] Inject emulated arm64 & arm32
+- [x] Inject emulated arm64 & arm32 via libhoudini.so or libndk_translation.so
 - [x] Bypass android linker namespace restrictions
 - [x] memfd dlopen support
 - [x] App launch monitor

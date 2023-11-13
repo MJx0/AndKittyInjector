@@ -2,6 +2,8 @@
 
 #include <KittyMemoryMgr.hpp>
 
+#include <sys/prctl.h>
+
 #include <dlfcn.h>
 #include <android/dlext.h>
 
@@ -42,7 +44,7 @@ private:
 
     uintptr_t _remote_dlopen, _remote_dlopen_ext, _remote_dlclose, _remote_dlerror;
 
-    ElfScanner _houdiniElf;
+    ElfScanner _nativeBridgeElf;
     NativeBridgeCallbacks _nativeBridgeItf;
 
     SoInfoPatch _soinfo_patch;

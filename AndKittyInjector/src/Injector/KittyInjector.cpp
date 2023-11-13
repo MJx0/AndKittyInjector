@@ -43,11 +43,14 @@ bool KittyInjector::init(pid_t pid, EKittyMemOP eMemOp)
     _remote_dlerror = _kMgr->findRemoteOfSymbol(KT_LOCAL_SYMBOL(dlerror));
 
     // check houdini for emulators
-    _houdiniElf = _kMgr->getMemElf(kNativeBridgeLib);
-    if (_houdiniElf.isValid())
+    _nativeBridgeElf = _kMgr->getMemElf(kNB_Houdini);
+    if (!_nativeBridgeElf.isValid())
+        _nativeBridgeElf = _kMgr->getMemElf(kNB_NdkTr);
+
+    if (_nativeBridgeElf.isValid())
     {
         // find and read native bridge interface
-        uintptr_t pNativeBridgeItf = _houdiniElf.findSymbol(kNativeBridgeSymbol);
+        uintptr_t pNativeBridgeItf = _nativeBridgeElf.findSymbol(kNativeBridgeSymbol);
         if (pNativeBridgeItf)
         {
             _kMgr->readMem(pNativeBridgeItf, &_nativeBridgeItf.version, sizeof(uint32_t));
@@ -106,23 +109,23 @@ injected_info_t KittyInjector::injectLibrary(std::string libPath, int flags, boo
     {
         KITTY_LOGW("injectLibrary: Library EMachine is not native.");
         KITTY_LOGI("injectLibrary: [native=0x%x | lib=0x%x].", kNativeEM, libHdr.e_machine);
-        KITTY_LOGI("injectLibrary: Searching for houdini emulation...");
+        KITTY_LOGI("injectLibrary: Searching for native bridge...");
 
-        if (!_houdiniElf.isValid())
+        if (!_nativeBridgeElf.isValid())
         {
-            KITTY_LOGW("injectLibrary: houdini not available.");
+            KITTY_LOGW("injectLibrary: No supported native bridge found.");
             return {};
         }
 
-        KITTY_LOGI("injectLibrary: Found houdini version %d.", _nativeBridgeItf.version);
+        KITTY_LOGI("injectLibrary: Found native bridge \"%s\" version %d.", KittyUtils::fileNameFromPath(_nativeBridgeElf.filePath()).c_str(), _nativeBridgeItf.version);
 
         // x86_64 emulates arm64, x86 emulates arm
-        if (_houdiniElf.header().e_machine == EM_X86_64 && libHdr.e_machine != EM_AARCH64)
+        if (_nativeBridgeElf.header().e_machine == EM_X86_64 && libHdr.e_machine != EM_AARCH64)
         {
             KITTY_LOGE("injectLibrary: EM_X86_64 should emualte EM_AARCH64.");
             return {};
         }
-        else if (_houdiniElf.header().e_machine == EM_386 && libHdr.e_machine != EM_ARM)
+        else if (_nativeBridgeElf.header().e_machine == EM_386 && libHdr.e_machine != EM_ARM)
         {
             KITTY_LOGE("injectLibrary: EM_386 should emualte EM_ARM.");
             return {};
@@ -169,7 +172,7 @@ injected_info_t KittyInjector::injectLibrary(std::string libPath, int flags, boo
             _soinfo_patch.after_dlopen_patch();
 
             // this works too but it's a bit slower
-            //_soinfo_patch.solist_remove_lib(injected.elfMap.map.startAddress);
+            //_soinfo_patch.solist_remove_lib(injected.elf.base());
 
             if (hideSegmentsFromMaps(injected)) {
                 uintptr_t hide_init = injected.elf.findSymbol("hide_init");
@@ -318,10 +321,28 @@ injected_info_t KittyInjector::emuInject(KittyIOFile& lib, int flags)
 
     if (_nativeBridgeItf.version >= NativeBridgeVersion::kNAMESPACE_VERSION)
     {
+        bool isHoudini = KittyUtils::fileNameFromPath(_nativeBridgeElf.filePath()).compare(kNB_Houdini) == 0;
+
+        auto ndktrLoadLibraryExt = [&]() -> uintptr_t
+        {
+            uintptr_t ns = 0;
+            if (_nativeBridgeItf.getExportedNamespace)
+            {
+                uintptr_t remote_ns_str = _remote_syscall.rmmap_str("default");
+                ns = _kMgr->trace.callFunction((uintptr_t)_nativeBridgeItf.getExportedNamespace, 1, remote_ns_str);
+            }
+            else if (_nativeBridgeItf.getVendorNamespace)
+            {
+                ns = _kMgr->trace.callFunction((uintptr_t)_nativeBridgeItf.getVendorNamespace, 0);
+            }
+
+            return _kMgr->trace.callFunction((uintptr_t)_nativeBridgeItf.loadLibraryExt, 3, remoteLibPath, flags, ns);
+        };
+
         // houdini version 3 or above will need to check which namespace will work between 1 to 25.
         // if (ns && ns <= 25)
         //    return (char *)&unk_64DF10 + 0xC670 * ns + qword_80C6C8;
-        auto tryRemoteloadLibraryExt = [&](uint8_t ns_start, uint8_t ns_end) -> uintptr_t
+        auto houdiniLoadLibraryExt = [&](uint8_t ns_start, uint8_t ns_end) -> uintptr_t
         {
             for (uint8_t i = ns_start; i <= ns_end; i++)
             {
@@ -338,18 +359,19 @@ injected_info_t KittyInjector::emuInject(KittyIOFile& lib, int flags)
             case NativeBridgeVersion::kVENDOR_NAMESPACE_VERSION: // not tested
             case NativeBridgeVersion::kRUNTIME_NAMESPACE_VERSION: // not tested
             case NativeBridgeVersion::kPRE_ZYGOTE_FORK_VERSION:
+            case NativeBridgeVersion::kCRITICAL_NATIVE_SUPPORT_VERSION:
                 // namespace 4-5 works mostly
-                info.dl_handle = tryRemoteloadLibraryExt(1, 5);
+                info.dl_handle = isHoudini ? houdiniLoadLibraryExt(1, 5) : ndktrLoadLibraryExt();
                 break;
             case NativeBridgeVersion::kNAMESPACE_VERSION:
                 // namespace 1-3 works mostly
-                info.dl_handle = tryRemoteloadLibraryExt(1, 3);
+                info.dl_handle = isHoudini ? houdiniLoadLibraryExt(1, 3) : ndktrLoadLibraryExt();
                 break;
         }
     }
     else if (_nativeBridgeItf.version == NativeBridgeVersion::kSIGNAL_VERSION)
     {
-        // more reliable on older version of houdini
+        // more reliable on NativeBridge version < 3
         auto libNB = _kMgr->getMemElf("libnativebridge.so");
         if (libNB.isValid())
         {
