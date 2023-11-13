@@ -380,14 +380,26 @@ bool KittyInjector::hideSegmentsFromMaps(injected_info_t &inj_info)
         return false;
     }
 
-    if (inj_info.is_hidden || inj_info.elf.filePath().empty())
+    if (inj_info.is_hidden)
         return true;
+
+    if (inj_info.elf.segments().empty())
+        return false;
 
     // idea from https://github.com/RikkaApps/Riru/blob/master/riru/src/main/cpp/hide/hide.cpp
 
-    auto maps = KittyMemoryEx::getMapsContain(_kMgr->processID(), inj_info.elf.filePath());
-    for (auto& it : maps)
+    for (auto& it : inj_info.elf.segments())
     {
+        if (it.pathname.empty()) continue;
+        /* if (KittyUtils::string_contains(it.pathname, ".bss]"))
+        {
+            KITTY_LOGI("hideSegmentsFromMaps: Spoofing .bss %p - %p", (void*)it.startAddress, (void*)it.endAddress);
+
+            uintptr_t rstr = _remote_syscall.rmmap_str("anon:Mem_0x10000004");
+            _remote_syscall.rprctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, it.startAddress, it.length, rstr);
+            continue;
+        } */
+
         KITTY_LOGI("hideSegmentsFromMaps: Hiding segment %p - %p", (void*)it.startAddress, (void*)it.endAddress);
 
         // backup segment code
