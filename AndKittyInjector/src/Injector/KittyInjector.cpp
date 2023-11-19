@@ -444,7 +444,7 @@ injected_info_t KittyInjector::emuInject(KittyIOFile& lib, int flags, bool use_d
         {
             // more reliable on NativeBridge version < 3
             uintptr_t pNbLoadLibrary = _nbElf.findSymbol("NativeBridgeLoadLibrary");
-            if (pNbLoadLibrary)
+            if (!pNbLoadLibrary)
                 pNbLoadLibrary = _nbElf.findSymbol("_ZN7android23NativeBridgeLoadLibraryEPKci");
 
             if (pNbLoadLibrary)
