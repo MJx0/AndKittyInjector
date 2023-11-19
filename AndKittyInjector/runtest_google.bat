@@ -7,7 +7,7 @@ SET "INJECTOR_PATH=/data/local/tmp/AndKittyInjector"
 SET "APP=com.kiloo.subwaysurf"
 
 :: test lib prints hello world to ( logcat -s "KittyMemoryEx" )
-SET "LIB_ARCH=x86_64"
+SET "LIB_ARCH=arm64"
 SET "LIB_PATH=/data/local/tmp/injtest.so"
 
 ECHO INJECTOR_PATH = %INJECTOR_PATH%
@@ -37,10 +37,17 @@ adb shell "kill $(pidof %INJECTOR_NAME%) > /dev/null 2>&1"
 :: exec perm
 adb shell "chmod 755 %INJECTOR_PATH%"
 
-:: using -dl_memfd -hide -watch
+:: using -dl_memfd -hide_maps -hide_solist -watch
 :: native injection might not need -delay when using -watch
-:: unless you try to inject emulated lib x86_64 -> arm64 / x86 -> arm
-adb shell "./%INJECTOR_PATH% -pkg %APP% -lib %LIB_PATH% -dl_memfd -hide -watch"
+:: unless you try to inject emulated lib with NativeBridge then you will need some delay
+SET NATIVE_CMD=adb shell "./%INJECTOR_PATH% -pkg %APP% -lib %LIB_PATH% -dl_memfd -hide_maps -hide_solist -watch"
+
+:: using -dl_memfd -hide_maps -hide_solist -watch -delay 800000 (800ms)
+:: recommended for emulated injection with NatievBridge
+:: -hide_solist here will be using memory scans to find solist, might not be perfect but it works most of time
+SET EMULATED_CMD=adb shell "./%INJECTOR_PATH% -pkg %APP% -lib %LIB_PATH% -dl_memfd -hide_maps -hide_solist -watch -delay 800000"
+
+IF "%INJECTOR_ARCH%"=="%LIB_ARCH%" (%NATIVE_CMD%) ELSE (%EMULATED_CMD%)
 
 ECHO ========= CHECKING MAPS =========
 

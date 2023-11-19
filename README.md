@@ -34,7 +34,9 @@ Optional arguments:
    
    -dl_memfd           Use memfd_create & dlopen_ext to inject library, useful to bypass path restrictions.
 
-   -hide               Try to hide lib from /maps and linker solist.
+   -hide_maps          Try to hide lib segments from /proc/[pid]/maps.
+
+   -hide_solist        Try to remove lib from linker or NativeBridge solist.
    
    -watch              Monitor process launch then inject, useful if you want to inject as fast as possible.
    
@@ -43,12 +45,27 @@ Optional arguments:
 
 <h2>Notes: </h2>
 
-- When using -hide do not use library constructor, instead define and export a function called hide_init
+- Do not start a thread in library constructor, instead use JNI_OnLoad:
 
 ```cpp
-extern "C" __attribute__((used)) void hide_init()
+extern "C" jint JNIEXPORT JNI_OnLoad(JavaVM* vm, void *key)
 {
-    // will be called after hide complete.
+    // key 1337 is passed by injector
+    if (key != (void*)1337)
+        return JNI_VERSION_1_6;
+
+    KITTY_LOGI("JNI_OnLoad called by injector.");
+
+    JNIEnv *env = nullptr;
+    if (vm->GetEnv((void**)&env, JNI_VERSION_1_6) == JNI_OK)
+    {
+        KITTY_LOGI("JavaEnv: %p.", env);
+        // ...
+    }
+    
+    std::thread(thread_function).detach();
+    
+    return JNI_VERSION_1_6;
 }
 ```
 

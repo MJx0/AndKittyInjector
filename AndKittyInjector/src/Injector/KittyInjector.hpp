@@ -2,8 +2,6 @@
 
 #include <KittyMemoryMgr.hpp>
 
-#include <sys/prctl.h>
-
 #include <dlfcn.h>
 #include <android/dlext.h>
 
@@ -24,11 +22,19 @@ static constexpr ElfW_(Half) kNativeEM = EM_X86_64;
 #error "Unsupported ABI"
 #endif
 
+std::string EMachineToStr(int16_t);
+
+#define kINJ_SECRET_KEY 1337
+
 struct injected_info_t
 {
-    bool is_native, is_hidden;
-    uintptr_t dl_handle;
+    bool is_native = false, is_hidden = false;
+    uintptr_t dl_handle = 0;
     ElfScanner elf;
+
+    uintptr_t pJvm = 0;
+    int secretKey = kINJ_SECRET_KEY;
+    uintptr_t pJNI_OnLoad = 0;
 
     injected_info_t() = default;
 
@@ -44,20 +50,20 @@ private:
 
     uintptr_t _remote_dlopen, _remote_dlopen_ext, _remote_dlclose, _remote_dlerror;
 
-    ElfScanner _nativeBridgeElf;
-    NativeBridgeCallbacks _nativeBridgeItf;
+    ElfScanner _nbElf, _nbImplElf;
+    NativeBridgeCallbacks _nbItf;
 
     SoInfoPatch _soinfo_patch;
 
 public:
     KittyInjector() : _remote_dlopen(0), _remote_dlopen_ext(0), _remote_dlclose(0), _remote_dlerror(0)
     {
-        memset(&_nativeBridgeItf, 0, sizeof(NativeBridgeCallbacks));
+        memset(&_nbItf, 0, sizeof(NativeBridgeCallbacks));
     }
 
-    inline bool remoteContainsMap(std::string name) const
+    inline bool remoteContainsMap(const std::string &name) const
     {
-        return _kMgr.get() && _kMgr->isMemValid() && !KittyMemoryEx::getMapsContain(_kMgr->processID(), name).empty();
+        return !name.empty() && _kMgr.get() && _kMgr->isMemValid() && !KittyMemoryEx::getMapsContain(_kMgr->processID(), name).empty();
     }
 
     /**
@@ -70,11 +76,14 @@ public:
     inline bool attach() { return _kMgr.get() && _kMgr->isMemValid() && _kMgr->trace.Attach(); };
     inline bool detach() { return _kMgr.get() && _kMgr->isMemValid() && _kMgr->trace.Detach(); }
 
-    injected_info_t injectLibrary(std::string libPath, int flags, bool use_dl_memfd, bool hide);
+    injected_info_t injectLibrary(std::string libPath, int flags,
+        bool use_memfd_dl, bool hide_maps, bool hide_solist, std::function<void(injected_info_t& injected)> beforeEntryPoint);
 
 private:
     injected_info_t nativeInject(KittyIOFile& lib, int flags, bool use_dl_memfd);
-    injected_info_t emuInject(KittyIOFile& lib, int flags);
-
-    bool hideSegmentsFromMaps(injected_info_t &inj_info);
+    injected_info_t emuInject(KittyIOFile& lib, int flags, bool use_dl_memfd);
+    
+    uintptr_t getJavaVM(injected_info_t &injected);
+    bool callEntryPoint(injected_info_t &injected);
+    bool hideSegmentsFromMaps(injected_info_t &injected);
 };

@@ -4,8 +4,10 @@
 #include <cstdint>
 #include <string>
 
-static constexpr const char *kNB_Houdini = "libhoudini.so";
-static constexpr const char *kNB_NdkTr  = "libndk_translation.so";
+static constexpr const char *kNB_Lib = "libnativebridge.so";
+
+static constexpr const char *kNB_Impl_Houdini = "libhoudini.so";
+static constexpr const char *kNB_Impl_NdkTr  = "libndk_translation.so";
 
 // The symbol name exposed by native-bridge with the type of NativeBridgeCallbacks.
 static constexpr const char *kNativeBridgeSymbol = "NativeBridgeItf";
@@ -14,27 +16,24 @@ static constexpr const char *kNativeBridgeSymbol = "NativeBridgeItf";
 // Different Nativebridge interface needs the service of different version of
 // Nativebridge implementation.
 // Used by isCompatibleWith() which is introduced in v2.
-namespace NativeBridgeVersion
-{
-    // first version, not used.
-    static constexpr uint32_t kDEFAULT_VERSION = 1;
-    // The version which signal semantic is introduced.
-    static constexpr uint32_t kSIGNAL_VERSION = 2;
-    // The version which namespace semantic is introduced.
-    static constexpr uint32_t kNAMESPACE_VERSION = 3;
-    // The version with vendor namespaces
-    static constexpr uint32_t kVENDOR_NAMESPACE_VERSION = 4;
-    // The version with runtime namespaces
-    static constexpr uint32_t kRUNTIME_NAMESPACE_VERSION = 5;
-    // The version with pre-zygote-fork hook to support app-zygotes.
-    static constexpr uint32_t kPRE_ZYGOTE_FORK_VERSION = 6;
-    // The version with critical_native support
-    static constexpr uint32_t kCRITICAL_NATIVE_SUPPORT_VERSION = 7;
 
+// first version, not used.
+static constexpr uint32_t NB_DEFAULT_VERSION = 1;
+// The version which signal semantic is introduced.
+static constexpr uint32_t NB_SIGNAL_VERSION = 2;
+// The version which namespace semantic is introduced.
+static constexpr uint32_t NB_NAMESPACE_VERSION = 3;
+// The version with vendor namespaces
+static constexpr uint32_t NB_VENDOR_NAMESPACE_VERSION = 4;
+// The version with runtime namespaces
+static constexpr uint32_t NB_RUNTIME_NAMESPACE_VERSION = 5;
+// The version with pre-zygote-fork hook to support app-zygotes.
+static constexpr uint32_t NB_PRE_ZYGOTE_FORK_VERSION = 6;
+// The version with critical_native support
+static constexpr uint32_t NB_CRITICAL_NATIVE_SUPPORT_VERSION = 7;
 
-    static constexpr uint32_t kMIN_VERSION = kSIGNAL_VERSION;
-    static constexpr uint32_t kMAX_VERSION = kCRITICAL_NATIVE_SUPPORT_VERSION;
-};
+static constexpr uint32_t NB_MIN_VERSION = NB_SIGNAL_VERSION;
+static constexpr uint32_t NB_MAX_VERSION = NB_CRITICAL_NATIVE_SUPPORT_VERSION;
 
 enum class NativeBridgeState
 {
@@ -57,13 +56,19 @@ struct NativeBridgeRuntimeValues
 
 typedef bool (*NativeBridgeSignalHandlerFn)(int, void *, void *);
 
-enum JNICallType {
+enum JNICallType
+{
     kJNICallTypeRegular = 1,
     kJNICallTypeCriticalNative = 2,
 };
 
 struct NativeBridgeCallbacks
 {
+    NativeBridgeCallbacks()
+    {
+        memset(this, 0, sizeof(NativeBridgeCallbacks));
+    }
+
     // Version number of the interface.
     uint32_t version;
 
@@ -103,6 +108,8 @@ struct NativeBridgeCallbacks
     //   len [IN] length of shorty
     // Returns:
     //   address of trampoline if successful, otherwise NULL
+    // Deprecated in v7
+    //   Starting with version 7 native bridge uses getTrampolineWithJNICallType instead
     void *(*getTrampoline)(void *handle, const char *name, const char *shorty, uint32_t len);
 
     // Check whether native library is valid and is for an ABI that is supported by native bridge.
@@ -300,17 +307,17 @@ struct NativeBridgeCallbacks
     {
         switch (version)
         {
-        case NativeBridgeVersion::kSIGNAL_VERSION:
+        case NB_SIGNAL_VERSION:
             return sizeof(uintptr_t) * 8;
-        case NativeBridgeVersion::kNAMESPACE_VERSION:
+        case NB_NAMESPACE_VERSION:
             return sizeof(uintptr_t) * 15;
-        case NativeBridgeVersion::kVENDOR_NAMESPACE_VERSION:
+        case NB_VENDOR_NAMESPACE_VERSION:
             return sizeof(uintptr_t) * 16;
-        case NativeBridgeVersion::kRUNTIME_NAMESPACE_VERSION:
+        case NB_RUNTIME_NAMESPACE_VERSION:
             return sizeof(uintptr_t) * 17;
-        case NativeBridgeVersion::kPRE_ZYGOTE_FORK_VERSION:
+        case NB_PRE_ZYGOTE_FORK_VERSION:
             return sizeof(uintptr_t) * 18;
-        case NativeBridgeVersion::kCRITICAL_NATIVE_SUPPORT_VERSION:
+        case NB_CRITICAL_NATIVE_SUPPORT_VERSION:
             return sizeof(uintptr_t) * 19;
         default:
             return sizeof(uint32_t);

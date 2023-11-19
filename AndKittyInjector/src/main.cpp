@@ -22,10 +22,10 @@
 #include "Injector/KittyInjector.hpp"
 KittyInjector kitInjector;
 
-injected_info_t inject_lib                (int pid, const std::string &lib, bool use_memfd, bool hide_lib);
+injected_info_t inject_lib                (int pid, const std::string &lib, bool use_memfd, bool hide_maps, bool hide_solist);
 int             sync_watch_callback       (const std::string &path, uint32_t mask, std::function<bool(int wd, struct inotify_event* event)> cb);
 int             am_process_start_callback (std::function<bool(const android_event_am_proc_start*)> cb);
-void            watch_proc_inject         (const std::string& pkg, const std::string& lib, bool use_dl_memfd, bool hide_lib, unsigned int inj_delay, injected_info_t* ret);
+void            watch_proc_inject         (const std::string& pkg, const std::string& lib, bool use_dl_memfd, bool hide_maps, bool hide_solist, unsigned int inj_delay, injected_info_t* ret);
 
 bool bHelp = false;
 
@@ -35,7 +35,9 @@ std::chrono::duration<double, std::milli> inj_ms {};
 
 int main(int argc, char* args[])
 {
-    setlinebuf(stdout);
+    setbuf(stdout, nullptr);
+    setbuf(stderr, nullptr);
+    setbuf(stdin, nullptr);
 
     KittyCmdln cmdline(argc, args);
 
@@ -55,8 +57,11 @@ int main(int argc, char* args[])
     bool use_dl_memfd = false; // optional
     cmdline.addFlag("-dl_memfd", "", "Use memfd_create & dlopen_ext to inject library, useful to bypass path restrictions.", false, &use_dl_memfd);
 
-    bool hide_lib = false; // optional
-    cmdline.addFlag("-hide", "", "Try to hide lib from /maps and linker solist.", false, &hide_lib);
+    bool hide_maps = false; // optional
+    cmdline.addFlag("-hide_maps", "", "Try to hide lib segments from /proc/[pid]/maps.", false, &hide_maps);
+    
+    bool hide_solist = false; // optional
+    cmdline.addFlag("-hide_solist", "", "Try to remove lib from linker or NativeBridge solist.", false, &hide_solist);
 
     bool use_watch_app = false; // optional
     cmdline.addFlag("-watch", "", "Monitor process launch then inject, useful if you want to inject as fast as possible.", false, &use_watch_app);
@@ -82,7 +87,8 @@ int main(int argc, char* args[])
     KITTY_LOGI("Library Path: %s", libPath);
 
     KITTY_LOGI("Use memfd dlopen: %d", use_dl_memfd ? 1 : 0);
-    KITTY_LOGI("Hide lib: %d", hide_lib ? 1 : 0);
+    KITTY_LOGI("Hide lib from maps: %d", hide_maps ? 1 : 0);
+    KITTY_LOGI("Hide lib from solist: %d", hide_solist ? 1 : 0);
     KITTY_LOGI("Use app watch: %d", use_watch_app ? 1 : 0);
     KITTY_LOGI("Inject delay: %d", inj_delay);
 
@@ -94,7 +100,7 @@ int main(int argc, char* args[])
         if (inj_delay > 0)
             SLEEP_MICROS(inj_delay);
 
-        injectedLibInfo = inject_lib(appPID, libPath, use_dl_memfd, hide_lib);
+        injectedLibInfo = inject_lib(appPID, libPath, use_dl_memfd, hide_maps, hide_solist);
     }
     else if (use_watch_app)
     {
@@ -113,7 +119,7 @@ int main(int argc, char* args[])
 
         KITTY_LOGI("Monitoring %s...", appPkg);
 
-        watch_proc_inject(appPkg, libPath, use_dl_memfd, hide_lib, inj_delay, &injectedLibInfo);
+        watch_proc_inject(appPkg, libPath, use_dl_memfd, hide_maps, hide_solist, inj_delay, &injectedLibInfo);
     }
     // find pid and inject
     else
@@ -127,7 +133,7 @@ int main(int argc, char* args[])
             exit(1);
         }
 
-        injectedLibInfo = inject_lib(appPID, libPath, use_dl_memfd, hide_lib);
+        injectedLibInfo = inject_lib(appPID, libPath, use_dl_memfd, hide_maps, hide_solist);
     }
 
     if (!injectedLibInfo.is_valid())
@@ -139,11 +145,11 @@ int main(int argc, char* args[])
     if (inj_ms.count() > 0)
         KITTY_LOGI("Injection took %f MS.", inj_ms.count());
 
-    KITTY_LOGI("Injection successed.");
+    KITTY_LOGI("Injection succeeded.");
     return 0;
 }
 
-injected_info_t inject_lib(int pid, const std::string& lib, bool use_memfd, bool hide_lib)
+injected_info_t inject_lib(int pid, const std::string& lib, bool use_memfd, bool hide_maps, bool hide_solist)
 {
     if (pid <= 0)
     {
@@ -153,25 +159,50 @@ injected_info_t inject_lib(int pid, const std::string& lib, bool use_memfd, bool
 
     // ptrace attach will stop one thread in target process
     // use kill to stop the whole process instead
+
     bool stopped = kill(pid, SIGSTOP) != -1;
+    if (stopped)
+        KITTY_LOGI("inject_lib: Stopped target process threads.");
+    else
+        KITTY_LOGW("inject_lib: Failed to stop target process threads.");
 
     injected_info_t ret {};
-    if (kitInjector.init(pid, EK_MEM_OP_SYSCALL))
+    if (kitInjector.init(pid, EK_MEM_OP_IO))
     {
-        kitInjector.attach();
+        KITTY_LOGI("inject_lib: Attaching to target process...");
+
+        if (kitInjector.attach()) {
+            KITTY_LOGI("inject_lib: Attached successfully.");
+        } else {
+            KITTY_LOGE("inject_lib: Failed to Attach.");
+            return ret;
+        }
 
         auto tm_start = std::chrono::high_resolution_clock::now();
 
-        ret = kitInjector.injectLibrary(lib, RTLD_NOW | RTLD_LOCAL, use_memfd, hide_lib);
+        ret = kitInjector.injectLibrary(lib, RTLD_NOW | RTLD_LOCAL, use_memfd, hide_maps, hide_solist,
+            [&pid, &stopped](injected_info_t& injected) {
+                // callback called before calling injected lib EntryPoint
+                // continue process so we can start thread safely in EntryPoint
+                if (injected.is_valid() && stopped)
+                {
+                    KITTY_LOGI("inject_lib: Continuing target process...");
+                    kill(pid, SIGCONT);
+                    stopped = false;
+                }
+            });
 
         inj_ms = std::chrono::high_resolution_clock::now()-tm_start;
 
         kitInjector.detach();
     } else
-        KITTY_LOGE("Couldn't initialize injector.");
+        KITTY_LOGE("inject_lib: Couldn't initialize injector.");
 
-    if (stopped)
-        kill(pid, SIGCONT);
+    if (!ret.is_valid())
+    {
+        KITTY_LOGI("inject_lib: Killing target process...");
+        kill(pid, SIGKILL);
+    }
 
     return ret;
 }
@@ -222,20 +253,19 @@ int am_process_start_callback(std::function<bool(const android_event_am_proc_sta
     bool first = true;
     __system_property_set("persist.log.tag", "");
 
-    std::unique_ptr<logger_list, decltype(&android_logger_list_free)> logger_list {
-        android_logger_list_alloc(0, 1, 0), &android_logger_list_free
-    };
+    auto logger_list = android_logger_list_alloc(0, 1, 0);
 
     errno = 0;
-    auto* logger = android_logger_open(logger_list.get(), LOG_ID_EVENTS);
+    auto* logger = android_logger_open(logger_list, LOG_ID_EVENTS);
     if (logger == nullptr)
-        return -1;
+        return false;
 
-    int ret = 0;
+    bool ret = false;
     struct log_msg msg { };
-    while (true) {
-        if (android_logger_list_read(logger_list.get(), &msg) <= 0) {
-            ret = -1;
+    while (true)
+    {
+        if (android_logger_list_read(logger_list, &msg) <= 0) {
+            ret = false;
             break;
         }
 
@@ -250,10 +280,13 @@ int am_process_start_callback(std::function<bool(const android_event_am_proc_sta
             continue;
 
         if (cb(reinterpret_cast<const android_event_am_proc_start*>(event_header))) {
-            ret = 1;
+            ret = true;
             break;
         }
     }
+
+    if (logger_list)
+        android_logger_list_free(logger_list);
 
     if (log_tag_get > 0 && log_tag[0] != 0)
         __system_property_set("persist.log.tag", log_tag);
@@ -262,23 +295,24 @@ int am_process_start_callback(std::function<bool(const android_event_am_proc_sta
 }
 
 void watch_proc_inject(const std::string& pkg, const std::string& lib,
-    bool use_dl_memfd, bool hide_lib, unsigned int inj_delay, injected_info_t* ret)
+    bool use_dl_memfd, bool hide_maps, bool hide_solist, unsigned int inj_delay, injected_info_t* ret)
 {    
     int pid = 0;
-    int proc_watch = am_process_start_callback([&](const android_event_am_proc_start* event) -> bool {
-        if (int(pkg.length()) != event->process_name.length
-            || strncmp(event->process_name.data, pkg.c_str(), pkg.length()))
+    int proc_monitor = am_process_start_callback([&](const android_event_am_proc_start* event) -> bool {
+        if (int(pkg.length()) != event->process_name.length)
+            return false;
+        if (strncmp(event->process_name.data, pkg.c_str(), pkg.length()))
             return false;
 
         pid = event->pid.data;
         return true;
     });
 
-    if (proc_watch < 0) {
-        KITTY_LOGE("Failed to monitor process start. last error = %s.", strerror(errno));
+    if (!proc_monitor) {
+        KITTY_LOGE("watch_proc_inject: Failed to monitor process start. last error = %s.", strerror(errno));
         exit(1);
-    } else if (pid == 0) {
-        KITTY_LOGE("proc_watch timeout.");
+    } else if (pid <= 0) {
+        KITTY_LOGE("watch_proc_inject: pid <= 0.");
         exit(1);
     }
 
@@ -303,16 +337,13 @@ void watch_proc_inject(const std::string& pkg, const std::string& lib,
     // KittyIOFile::readFileToString(KittyUtils::strfmt("/proc/%d/cmdline", pid), &cmdline);
     // KITTY_LOGI("cmdline %s", cmdline.c_str());
 
-    if (proc_dir_watch < 0) {
-        KITTY_LOGE("Failed to add watch on process directory. last error = %s.", strerror(errno));
-        exit(1);
-    } else if (proc_dir_watch == 0) {
-        KITTY_LOGE("proc_dir_watch timeout.");
+    if (proc_dir_watch <= 0) {
+        KITTY_LOGE("watch_proc_inject: Failed to add watch on process directory. last error = %s.", strerror(errno));
         exit(1);
     }
 
     if (inj_delay > 0)
         SLEEP_MICROS(inj_delay);
 
-    *ret = inject_lib(pid, lib, use_dl_memfd, hide_lib);
+    *ret = inject_lib(pid, lib, use_dl_memfd, hide_maps, hide_solist);
 }

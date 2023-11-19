@@ -35,6 +35,7 @@
 #endif
 
 #include <KittyMemoryMgr.hpp>
+#include <sys/prctl.h>
 
 #define IsValidRetPtr(x) (uintptr_t(x) > 0 && uintptr_t(x) != uintptr_t(-1) && uintptr_t(x) != uintptr_t(-4) && uintptr_t(x) != uintptr_t(-8))
 
