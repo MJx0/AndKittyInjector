@@ -11,13 +11,13 @@
 #include "SoInfoPatch.hpp"
 
 #ifdef __aarch64__
-static constexpr ElfW_(Half) kNativeEM = EM_AARCH64;
+static constexpr ElfW_(Half) kInjectorEM = EM_AARCH64;
 #elif __arm__
-static constexpr ElfW_(Half) kNativeEM = EM_ARM;
+static constexpr ElfW_(Half) kInjectorEM = EM_ARM;
 #elif __i386__
-static constexpr ElfW_(Half) kNativeEM = EM_386;
+static constexpr ElfW_(Half) kInjectorEM = EM_386;
 #elif __x86_64__
-static constexpr ElfW_(Half) kNativeEM = EM_X86_64;
+static constexpr ElfW_(Half) kInjectorEM = EM_X86_64;
 #else
 #error "Unsupported ABI"
 #endif

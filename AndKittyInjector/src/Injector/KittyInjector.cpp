@@ -40,6 +40,14 @@ bool KittyInjector::init(pid_t pid, EKittyMemOP eMemOp)
         return false;
     }
 
+    auto targetEM = _kMgr->getMemElfExe().header().e_machine;
+    if (kInjectorEM != targetEM)
+    {
+        KITTY_LOGE("KittyInjector: Injector is %s but target app is %s.", EMachineToStr(kInjectorEM).c_str(), EMachineToStr(targetEM).c_str());
+        KITTY_LOGE("KittyInjector: Please use %s version of the injector.", EMachineToStr(targetEM).c_str());
+        return false;
+    }
+
     if (!_remote_syscall.init(_kMgr.get()))
     {
         KITTY_LOGE("KittyInjector: Failed to initialize remote syscall.");
@@ -124,10 +132,10 @@ injected_info_t KittyInjector::injectLibrary(std::string libPath, int flags,
         return {};
     }
 
-    KITTY_LOGI("injectLibrary: [native=%s | lib=%s].", EMachineToStr(kNativeEM).c_str(), EMachineToStr(libHdr.e_machine).c_str());
+    KITTY_LOGI("injectLibrary: [native=%s | lib=%s].", EMachineToStr(kInjectorEM).c_str(), EMachineToStr(libHdr.e_machine).c_str());
 
     // check if need emulation
-    if (libHdr.e_machine != kNativeEM)
+    if (libHdr.e_machine != kInjectorEM)
     {
         KITTY_LOGW("injectLibrary: Library EMachine is not native.");
         KITTY_LOGI("injectLibrary: Searching for NativeBridge implementation...");
@@ -171,7 +179,7 @@ injected_info_t KittyInjector::injectLibrary(std::string libPath, int flags,
 
     injected_info_t injected {};
 
-    if (libHdr.e_machine == kNativeEM)
+    if (libHdr.e_machine == kInjectorEM)
         injected = nativeInject(libFile, flags, canUseMemfd);
     else
         injected = emuInject(libFile, flags, canUseMemfd);
@@ -183,7 +191,7 @@ injected_info_t KittyInjector::injectLibrary(std::string libPath, int flags,
     {
         if (hide_solist)
         {
-            if (libHdr.e_machine == kNativeEM)
+            if (libHdr.e_machine == kInjectorEM)
                 _soinfo_patch.linker_solist_remove_elf(injected.elf);
             else
                 _soinfo_patch.nb_solist_remove_elf(_nbImplElf, injected.elf);
@@ -204,7 +212,7 @@ injected_info_t KittyInjector::injectLibrary(std::string libPath, int flags,
 
         uintptr_t error_ret = 0;
 
-        if (libHdr.e_machine == kNativeEM)
+        if (libHdr.e_machine == kInjectorEM)
             error_ret = _kMgr->trace.callFunction(_remote_dlerror, 0);
         else if (_nbItf.version >= NB_NAMESPACE_VERSION)
             error_ret = _kMgr->trace.callFunction((uintptr_t)_nbItf.getError, 0);
@@ -547,7 +555,7 @@ uintptr_t KittyInjector::getJavaVM(injected_info_t &injected)
 
     if (status != 0 || !pJvm || nJvms != 1)
     {
-        KITTY_LOGE("callEntryPoint: Failed to get JavaVM err(%d).", status);
+        KITTY_LOGE("getJavaVM: Failed to get JavaVM err(%d).", status);
         return 0;
     }
 
