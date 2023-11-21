@@ -17,6 +17,7 @@ Inject from /data for Android
 - [x] Hide lib from linker solist ( dladdr & dl_iterate_phdr )
 
 <h2> How to use: </h2>
+
 Make sure to chmod +x or 755
 
 ```text
@@ -72,6 +73,18 @@ extern "C" jint JNIEXPORT JNI_OnLoad(JavaVM* vm, void *key)
 - When using -watch to inject as soon as the target app launches, you may need to use -delay as well, especially when injecting emulated lib.
 
 - When using -dl_memfd and it fails then legacy dlopen will be called.
+
+<h2> Compile: </h2>
+
+- Make sure to have NDK, cmake and make installed and added to OS environment path.
+- Set NDK_HOME to point to NDK folder
+- You can check both [ndk-build.bat](AndKittyInjector/ndk-build.bat) and [cmake-build.bat](AndKittyInjector/cmake-build.bat)
+
+```shell
+git clone --recursive https://github.com/MJx0/AndKittyInjector.git
+cd AndKittyInjector/AndKittyInjector
+ndk-build.bat
+```
 
 <h2>Credits: </h2>
 
