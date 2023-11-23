@@ -317,7 +317,7 @@ void watch_proc_inject(const std::string& pkg, const std::string& lib,
     }
 
     // inject on any event that isn't related to fd or timer
-    auto proc_dir = KittyUtils::strfmt("/proc/%d", pid);
+    auto proc_dir = KittyUtils::String::Fmt("/proc/%d", pid);
     int proc_dir_watch = sync_watch_callback(proc_dir, IN_ALL_EVENTS,
         [&](int, struct inotify_event* iev) -> bool {
 
@@ -334,7 +334,7 @@ void watch_proc_inject(const std::string& pkg, const std::string& lib,
 
     // maybe check cmdline if zygote or <preinitalized>
     // std::string cmdline;
-    // KittyIOFile::readFileToString(KittyUtils::strfmt("/proc/%d/cmdline", pid), &cmdline);
+    // KittyIOFile::readFileToString(KittyUtils::String::Fmt("/proc/%d/cmdline", pid), &cmdline);
     // KITTY_LOGI("cmdline %s", cmdline.c_str());
 
     if (proc_dir_watch <= 0) {

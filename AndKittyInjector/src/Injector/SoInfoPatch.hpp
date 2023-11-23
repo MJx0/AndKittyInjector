@@ -183,7 +183,7 @@ class SoInfoPatch
             bool check1 = (it.is_rw && it.startAddress >= nb_impl_elf.bss() && it.endAddress <= (nb_impl_elf.bss()+nb_impl_elf.bssSize()));
             
             // search in "[anon:Mem_x]" read-only regions
-            bool check2 = (it.is_ro && KittyUtils::string_startswith(it.pathname, "[anon:Mem_"));
+            bool check2 = (it.is_ro && KittyUtils::String::StartsWith(it.pathname, "[anon:Mem_"));
 
             // search in "[anon:linker_alloc]" read-only regions
             bool check3 = (it.is_ro && it.pathname == "[anon:linker_alloc]");
@@ -227,13 +227,10 @@ class SoInfoPatch
                 return results;
         }
         
-        for (auto& it : maps)
+        // search in nb implementation rw regions
+        for (auto& it : nb_impl_elf.segments())
         {
-            if (!it.is_private || it.length < 0xFFFF)
-                continue;
-
-            // search in nb implementation rw regions
-            if (!(it.is_rw && it.startAddress >= nb_impl_elf.base() && it.endAddress <= nb_impl_elf.end()))
+            if (!it.is_private || !it.is_rw)
                 continue;
 
             auto results = _kMgr->memScanner.findDataAll(it.startAddress, it.endAddress, &si, sizeof(si));
@@ -286,14 +283,14 @@ class SoInfoPatch
                 if (sohead_elf.isValid() && it.startAddress >= sohead_elf.base())
                     continue;
 
-                if (!KittyUtils::string_contains(it.pathname, arch))
+                if (!KittyUtils::String::Contains(it.pathname, arch))
                     continue;
 
                 auto fileName = KittyUtils::fileNameFromPath(it.pathname);
                 auto fileExtension = KittyUtils::fileExtension(it.pathname);
 
                 bool is_libc = fileName == "libc.so";
-                bool is_app_process = fileExtension.empty() && KittyUtils::string_startswith(fileName, "app_process");
+                bool is_app_process = fileExtension.empty() && KittyUtils::String::StartsWith(fileName, "app_process");
 
                 if (!is_libc && !is_app_process)
                     continue;
@@ -307,11 +304,11 @@ class SoInfoPatch
                 sohead_elf = tmp;
             }
 
-            // our injected elf is loaded before libc / app_process ?
-            if (!sohead_elf.isValid() || sohead_elf.base() > elf.base())
+            // nb libc / app_process not loaded yet.
+            if (!sohead_elf.isValid())
             {
                 // don't have solution for this yet, increase injection delay for now
-                KITTY_LOGE("SoInfoPatch: Failed to remove elf(%p) (first in solist).", (void*)elf.base());
+                KITTY_LOGE("SoInfoPatch: Failed to find sohead ELF.");
                 return false;
             }
 
@@ -363,7 +360,7 @@ class SoInfoPatch
 
         if (!trav)
         {
-            KITTY_LOGE("SoInfoPatch: elf(%p) is not in solist.", (void*)elf.base());  
+            KITTY_LOGE("SoInfoPatch: elf(%p) is not in solist or was loaded before sohead.", (void*)elf.base());  
             return false;
         }
 

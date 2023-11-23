@@ -259,7 +259,7 @@ injected_info_t KittyInjector::nativeInject(KittyIOFile& lib, int flags, bool us
 
     auto memfd_dlopen = [&]() -> bool
     {
-        std::string memfd_rand = KittyUtils::random_string(KittyUtils::randInt(5, 12));
+        std::string memfd_rand = KittyUtils::String::Random(KittyUtils::randInt(5, 12));
         KITTY_LOGI("nativeInject: memfd_rand(%d) = %s.", int(memfd_rand.length()), memfd_rand.c_str());
 
         uintptr_t rmemfd_name = _remote_syscall.rmmap_str(memfd_rand);
@@ -276,7 +276,7 @@ injected_info_t KittyInjector::nativeInject(KittyIOFile& lib, int flags, bool us
             return false;
         }
 
-        std::string rmemfdPath = KittyUtils::strfmt("/proc/%d/fd/%d", _kMgr->processID(), rmemfd);
+        std::string rmemfdPath = KittyUtils::String::Fmt("/proc/%d/fd/%d", _kMgr->processID(), rmemfd);
         KittyIOFile rmemfdFile(rmemfdPath, O_RDWR);
         if (!rmemfdFile.Open())
         {
@@ -356,7 +356,7 @@ injected_info_t KittyInjector::emuInject(KittyIOFile& lib, int flags, bool use_d
     if (use_dl_memfd)
     {
         do {
-            std::string memfd_rand = KittyUtils::random_string(KittyUtils::randInt(5, 12));
+            std::string memfd_rand = KittyUtils::String::Random(KittyUtils::randInt(5, 12));
             memfdName = "/memfd:" + memfd_rand;
             KITTY_LOGI("emuInject: memfd_rand(%d) = %s.", int(memfd_rand.length()), memfd_rand.c_str());
 
@@ -374,7 +374,7 @@ injected_info_t KittyInjector::emuInject(KittyIOFile& lib, int flags, bool use_d
                 break;
             }
 
-            std::string rmemfdPath = KittyUtils::strfmt("/proc/%d/fd/%d", _kMgr->processID(), rmemfd);
+            std::string rmemfdPath = KittyUtils::String::Fmt("/proc/%d/fd/%d", _kMgr->processID(), rmemfd);
             KittyIOFile rmemfdFile(rmemfdPath, O_RDWR);
             if (!rmemfdFile.Open())
             {
@@ -621,7 +621,7 @@ bool KittyInjector::hideSegmentsFromMaps(injected_info_t &injected)
     {
         if (it.pathname.empty()) continue;
         
-        /* if (KittyUtils::string_contains(it.pathname, ".bss]"))
+        /* if (KittyUtils::String::Contains(it.pathname, ".bss]"))
         {
             KITTY_LOGI("hideSegments: Spoofing .bss %p - %p", (void*)it.startAddress, (void*)it.endAddress);
             uintptr_t rstr = _remote_syscall.rmmap_str("anon:Mem_0x10000004");
