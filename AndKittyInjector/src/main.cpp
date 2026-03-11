@@ -32,7 +32,7 @@
     }
 
 #define kPROGRAM_NAME "AndKittyInjector"
-#define kPROGRAM_VER "5.01"
+#define kPROGRAM_VER "5.0.2"
 
 bool inject(int pid,
             const std::vector<std::string> &libs,
@@ -279,15 +279,10 @@ bool inject(int pid,
         }
 
         KITTY_LOGI("Injector: Breakpoint triggered successfully.");
-
-        if (!emulate)
-        {
-            kmgr.trace.waitSyscall();
-        }
     }
 
     std::string cmdline;
-    std::string cmdlinePath = KittyUtils::String::Fmt("/proc/%d/cmdline", pid);
+    std::string cmdlinePath = KittyUtils::String::fmt("/proc/%d/cmdline", pid);
     KittyIOFile::readFileToString(cmdlinePath, &cmdline);
     KITTY_LOGI("Proccess current cmdline (\"%s\").", cmdline.c_str());
 
@@ -318,6 +313,7 @@ bool inject(int pid,
 
 bool inject_watch(const std::vector<std::string> &libs, inject_elf_config_t &cfg, std::vector<inject_elf_info_t> *out)
 {
+    bool result = false;
     int pid = 0;
     errno = 0;
     Utils::am_process_start([&](const android_event_am_proc_start *event) -> bool {
@@ -327,6 +323,56 @@ bool inject_watch(const std::vector<std::string> &libs, inject_elf_config_t &cfg
             return false;
 
         pid = event->pid.data;
+
+        // inject on any event that isn't related to fd or timer
+        // this delays injection for linker init
+        // not used when --bp is used
+
+        if (!cfg.bp)
+        {
+            int inotifyFd = inotify_init1(IN_CLOEXEC);
+            if (inotifyFd < 0)
+            {
+                KITTY_LOGE("Failed to initialize inotify. \"%s\".", strerror(errno));
+                exit(1);
+            }
+
+            auto proc_dir = KittyUtils::String::fmt("/proc/%d", pid);
+            bool proc_dir_watch = Utils::inotify_watch_directory(inotifyFd,
+                                                                 proc_dir,
+                                                                 IN_ALL_EVENTS,
+                                                                 [&](int, struct inotify_event *iev) -> bool {
+                                                                     /*KITTY_LOGI("mask=0x%x | event=%s",
+                                                                                iev->mask,
+                                                                                iev->len > 0 ? iev->name : "null");*/
+
+                                                                     // skip fd event
+                                                                     if (iev->len >= 2 &&
+                                                                         *(uint16_t *)iev->name == 0x6466)
+                                                                         return false;
+
+                                                                     // skip timerslack event
+                                                                     if (iev->len >= 4 &&
+                                                                         *(uint32_t *)iev->name == 0x656d6974)
+                                                                         return false;
+
+                                                                     return true;
+                                                                 });
+
+            close(inotifyFd);
+
+            if (!proc_dir_watch)
+            {
+                KITTY_LOGE("Failed to add watch on process directory. last error = %s.", strerror(errno));
+                exit(1);
+            }
+        }
+
+        if (cfg.delay > 0)
+            SLEEP_MICROS(cfg.delay);
+
+        result = inject(pid, libs, cfg, out);
+
         return true;
     });
 
@@ -336,51 +382,5 @@ bool inject_watch(const std::vector<std::string> &libs, inject_elf_config_t &cfg
         exit(1);
     }
 
-    // inject on any event that isn't related to fd or timer
-    // this delays injection for linker init
-    // not used when --bp is used
-
-    if (!cfg.bp)
-    {
-        int inotifyFd = inotify_init1(IN_CLOEXEC);
-        if (inotifyFd < 0)
-        {
-            KITTY_LOGE("Failed to initialize inotify. \"%s\".", strerror(errno));
-            exit(1);
-        }
-
-        auto proc_dir = KittyUtils::String::Fmt("/proc/%d", pid);
-        bool proc_dir_watch = Utils::inotify_watch_directory(inotifyFd,
-                                                             proc_dir,
-                                                             IN_ALL_EVENTS,
-                                                             [&](int, struct inotify_event *iev) -> bool {
-                                                                 /*KITTY_LOGI("mask=0x%x | event=%s",
-                                                                            iev->mask,
-                                                                            iev->len > 0 ? iev->name : "null");*/
-
-                                                                 // skip fd event
-                                                                 if (iev->len >= 2 && *(uint16_t *)iev->name == 0x6466)
-                                                                     return false;
-
-                                                                 // skip timerslack event
-                                                                 if (iev->len >= 4 &&
-                                                                     *(uint32_t *)iev->name == 0x656d6974)
-                                                                     return false;
-
-                                                                 return true;
-                                                             });
-
-        close(inotifyFd);
-
-        if (!proc_dir_watch)
-        {
-            KITTY_LOGE("Failed to add watch on process directory. last error = %s.", strerror(errno));
-            exit(1);
-        }
-    }
-
-    if (cfg.delay > 0)
-        SLEEP_MICROS(cfg.delay);
-
-    return inject(pid, libs, cfg, out);
+    return result;
 }

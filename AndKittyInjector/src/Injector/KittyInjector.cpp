@@ -135,14 +135,14 @@ bool KittyInjector::validateElf(const std::string &elfPath, KT_ElfW(Ehdr) * hdr,
     KT_ElfW(Ehdr) libHdr = {};
 
     KittyIOFile libFile(elfPath, O_RDONLY | O_CLOEXEC);
-    if (!libFile.Open())
+    if (!libFile.open())
     {
         KITTY_LOGE("Injector: %s not accessible. (\"%s\")", elfPath.c_str(), libFile.lastStrError().c_str());
         return false;
     }
 
-    libFile.Read(0, &libHdr, sizeof(libHdr));
-    libFile.Close();
+    libFile.pread(0, &libHdr, sizeof(libHdr));
+    libFile.close();
 
     if (hdr)
         memcpy(hdr, &libHdr, sizeof(libHdr));
@@ -207,7 +207,7 @@ bool KittyInjector::waitBreakpoint(bool needsNB)
 #if defined(__arm__) || defined(__aarch64__)
     KT_WATCH_LEN bpLen = KT_PERFWATCH_LEN_4;
 #else
-    KT_WATCH_LEN bpLen = KittyUtils::isKernel64Bit() ? KT_PERFWATCH_LEN_8 : KT_PERFWATCH_LEN_4;
+    KT_WATCH_LEN bpLen = KittyUtils::is64BitSupported() ? KT_PERFWATCH_LEN_8 : KT_PERFWATCH_LEN_4;
 #endif
 
     if (!perf.add(_kMgr->processID(), bp_addr, KT_PERFWATCH_X, bpLen))
@@ -352,7 +352,7 @@ inject_elf_info_t KittyInjector::inject(const std::string &elfPath)
     }
 
     KittyIOFile libFile(elfPath, O_RDONLY | O_CLOEXEC);
-    if (!libFile.Open())
+    if (!libFile.open())
     {
         KITTY_LOGE("Injector: Library path not accessible. (\"%s\")", libFile.lastStrError().c_str());
         return {};
@@ -539,7 +539,7 @@ inject_elf_info_t KittyInjector::nativeInject(KittyIOFile &elfFile, bool *bCalld
     info.is_native = true;
 
     auto do_legacy_dlopen = [&]() -> void {
-        if (!_kMgr->writeMemStr(_rbuffer, elfFile.Path()))
+        if (!_kMgr->writeMemStr(_rbuffer, elfFile.path()))
         {
             KITTY_LOGE("nativeInject: Failed to write lib path into stack!");
             return;
@@ -548,8 +548,8 @@ inject_elf_info_t KittyInjector::nativeInject(KittyIOFile &elfFile, bool *bCalld
         info.dl_handle = _kMgr->trace.callFunctionFrom(_dl_caller, _rdlopen, _rbuffer, _cfg.rtdl_flags);
         if (info.dl_handle != 0)
         {
-            info.soinfo = _kMgr->linkerScanner.findSoInfo(elfFile.Path());
-            info.elf = _kMgr->elfScanner.findElf(elfFile.Path(), EScanElfType::Native);
+            info.soinfo = _kMgr->linkerScanner.findSoInfo(elfFile.path());
+            info.elf = _kMgr->elfScanner.findElf(elfFile.path(), EScanElfType::Native);
             if (!info.elf.isValid())
             {
                 info.elf = _kMgr->elfScanner.createWithSoInfo(info.soinfo);
@@ -563,7 +563,7 @@ inject_elf_info_t KittyInjector::nativeInject(KittyIOFile &elfFile, bool *bCalld
     };
 
     auto do_memfd_dlopen = [&]() -> void {
-        std::string memfd_rand = KittyUtils::String::Random(KittyUtils::randInt(5, 12));
+        std::string memfd_rand = KittyUtils::String::random(KittyUtils::randInt(5, 12));
         KITTY_LOGI("nativeInject: memfd Name (\"%s\").", memfd_rand.c_str());
 
         if (!_kMgr->writeMemStr(_rbuffer, memfd_rand))
@@ -579,16 +579,16 @@ inject_elf_info_t KittyInjector::nativeInject(KittyIOFile &elfFile, bool *bCalld
             return;
         }
 
-        std::string rmemfdPath = KittyUtils::String::Fmt("/proc/%d/fd/%d", _kMgr->processID(), rmemfd);
+        std::string rmemfdPath = KittyUtils::String::fmt("/proc/%d/fd/%d", _kMgr->processID(), rmemfd);
         KittyIOFile rmemfdFile(rmemfdPath, O_RDWR);
-        if (!rmemfdFile.Open())
+        if (!rmemfdFile.open())
         {
             KITTY_LOGE("nativeInject: Failed to open remote memfd file, errno (\"%s\").",
                        rmemfdFile.lastStrError().c_str());
             return;
         }
 
-        elfFile.writeToFd(rmemfdFile.FD());
+        elfFile.writeToFd(rmemfdFile.fd());
 
         // restrict further modifications to remote memfd
         _rsyscall.rmemfd_seal(rmemfd, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_SEAL);
@@ -748,14 +748,14 @@ inject_elf_info_t KittyInjector::emuInject(KittyIOFile &elfFile, bool *bCalldler
     info.is_native = false;
 
     auto do_legacy_dlopen = [&]() -> void {
-        info.dl_handle = emu_dlopen(elfFile.Path());
+        info.dl_handle = emu_dlopen(elfFile.path());
         if (info.dl_handle != 0)
         {
             // init nb scanner after emu dlopen
             _kMgr->nbScanner.init();
 
-            info.soinfo = _kMgr->nbScanner.findSoInfo(elfFile.Path());
-            info.elf = _kMgr->elfScanner.findElf(elfFile.Path(), EScanElfType::Emulated);
+            info.soinfo = _kMgr->nbScanner.findSoInfo(elfFile.path());
+            info.elf = _kMgr->elfScanner.findElf(elfFile.path(), EScanElfType::Emulated);
             if (!info.elf.isValid())
             {
                 info.elf = _kMgr->elfScanner.createWithSoInfo(info.soinfo);
@@ -769,7 +769,7 @@ inject_elf_info_t KittyInjector::emuInject(KittyIOFile &elfFile, bool *bCalldler
     };
 
     auto do_memfd_dlopen = [&]() -> void {
-        std::string memfd_rand = KittyUtils::String::Random(KittyUtils::randInt(5, 12));
+        std::string memfd_rand = KittyUtils::String::random(KittyUtils::randInt(5, 12));
         KITTY_LOGI("emuInject: memfd Name (\"%s\").", memfd_rand.c_str());
 
         if (!_kMgr->writeMemStr(_rbuffer, memfd_rand))
@@ -785,15 +785,15 @@ inject_elf_info_t KittyInjector::emuInject(KittyIOFile &elfFile, bool *bCalldler
             return;
         }
 
-        std::string rmemfdPath = KittyUtils::String::Fmt("/proc/%d/fd/%d", _kMgr->processID(), rmemfd);
+        std::string rmemfdPath = KittyUtils::String::fmt("/proc/%d/fd/%d", _kMgr->processID(), rmemfd);
         KittyIOFile rmemfdFile(rmemfdPath, O_RDWR);
-        if (!rmemfdFile.Open())
+        if (!rmemfdFile.open())
         {
             KITTY_LOGE("emuInject: Failed to open remote memfd file, errno = %s.", rmemfdFile.lastStrError().c_str());
             return;
         }
 
-        elfFile.writeToFd(rmemfdFile.FD());
+        elfFile.writeToFd(rmemfdFile.fd());
 
         // restrict further modifications to remote memfd
         _rsyscall.rmemfd_seal(rmemfd, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_SEAL);
@@ -1087,7 +1087,7 @@ uintptr_t KittyInjector::getJavaVM(inject_elf_info_t &injected)
         return 0;
     }
 
-    return KittyUtils::untagHeepPtr(pJvm);
+    return pJvm;
 }
 
 bool KittyInjector::callEntryPoint(inject_elf_info_t &injected)
@@ -1247,7 +1247,7 @@ std::vector<uintptr_t> KittyInjector::findNbSoInfoRefs(const kitty_soinfo_t &soi
 
     for (auto &it : maps)
     {
-        bool check1 = (it.is_ro && KittyUtils::String::StartsWith(it.pathname, "[anon:Mem_"));
+        bool check1 = (it.is_ro && KittyUtils::String::startsWith(it.pathname, "[anon:Mem_"));
         bool check2 = (it.is_ro && it.pathname == "[anon:linker_alloc]");
         if (!check1 && !check2)
             continue;
