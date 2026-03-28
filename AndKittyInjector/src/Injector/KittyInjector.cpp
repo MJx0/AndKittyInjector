@@ -302,7 +302,7 @@ bool KittyInjector::waitBreakpoint(bool needsNB)
     return true;
 }
 
-inject_elf_info_t KittyInjector::inject(const std::string &elfPath)
+inject_elf_info_t KittyInjector::inject(const std::string &elfPath, const std::string &memfdName)
 {
     if (!_kMgr || !_kMgr->isMemValid())
     {
@@ -426,7 +426,7 @@ inject_elf_info_t KittyInjector::inject(const std::string &elfPath)
     if (!emulate)
     {
         KITTY_LOGI("Injector: using nativeInject...");
-        injected = nativeInject(libFile, &bCalldlerror);
+        injected = nativeInject(libFile, &bCalldlerror, memfdName);
     }
     else
     {
@@ -533,7 +533,7 @@ inject_elf_info_t KittyInjector::inject(const std::string &elfPath)
     return injected;
 }
 
-inject_elf_info_t KittyInjector::nativeInject(KittyIOFile &elfFile, bool *bCalldlerror)
+inject_elf_info_t KittyInjector::nativeInject(KittyIOFile &elfFile, bool *bCalldlerror, const std::string &memfdName)
 {
     inject_elf_info_t info{};
     info.is_native = true;
@@ -563,10 +563,10 @@ inject_elf_info_t KittyInjector::nativeInject(KittyIOFile &elfFile, bool *bCalld
     };
 
     auto do_memfd_dlopen = [&]() -> void {
-        std::string memfd_rand = KittyUtils::String::random(KittyUtils::randInt(5, 12));
-        KITTY_LOGI("nativeInject: memfd Name (\"%s\").", memfd_rand.c_str());
 
-        if (!_kMgr->writeMemStr(_rbuffer, memfd_rand))
+        KITTY_LOGI("nativeInject: memfd Name (\"%s\").", memfdName.c_str());
+
+        if (!_kMgr->writeMemStr(_rbuffer, memfdName))
         {
             KITTY_LOGE("nativeInject: Failed to write memfd name into stack!");
             return;
