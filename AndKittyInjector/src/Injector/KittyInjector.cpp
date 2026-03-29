@@ -426,12 +426,12 @@ inject_elf_info_t KittyInjector::inject(const std::string &elfPath, const std::s
     if (!emulate)
     {
         KITTY_LOGI("Injector: using nativeInject...");
-        injected = nativeInject(libFile, &bCalldlerror, memfdName);
+        injected = nativeInject(libFile, memfdName, &bCalldlerror);
     }
     else
     {
         KITTY_LOGI("Injector: using emuInject...");
-        injected = emuInject(libFile, &bCalldlerror);
+        injected = emuInject(libFile, memfdName, &bCalldlerror);
     }
 
     KITTY_LOGI("Injector: Library Handle (%p).", (void *)injected.dl_handle);
@@ -533,7 +533,7 @@ inject_elf_info_t KittyInjector::inject(const std::string &elfPath, const std::s
     return injected;
 }
 
-inject_elf_info_t KittyInjector::nativeInject(KittyIOFile &elfFile, bool *bCalldlerror, const std::string &memfdName)
+inject_elf_info_t KittyInjector::nativeInject(KittyIOFile &elfFile, const std::string &memfdName, bool *bCalldlerror)
 {
     inject_elf_info_t info{};
     info.is_native = true;
@@ -597,7 +597,7 @@ inject_elf_info_t KittyInjector::nativeInject(KittyIOFile &elfFile, bool *bCalld
         extinfo.flags = ANDROID_DLEXT_USE_LIBRARY_FD;
         extinfo.library_fd = rmemfd;
 
-        uintptr_t rdlextinfo = kGET_ALIGIN_UP(_rbuffer + memfd_rand.size() + 1);
+        uintptr_t rdlextinfo = kGET_ALIGIN_UP(_rbuffer + memfdName.size() + 1);
         if (!_kMgr->writeMem(rdlextinfo, &extinfo, sizeof(extinfo)))
         {
             KITTY_LOGE("nativeInject: Failed to write dlextinfo into stack!");
@@ -607,8 +607,8 @@ inject_elf_info_t KittyInjector::nativeInject(KittyIOFile &elfFile, bool *bCalld
         info.dl_handle = _kMgr->trace.callFunctionFrom(_dl_caller, _rdlopen_ext, _rbuffer, _cfg.rtdl_flags, rdlextinfo);
         if (info.dl_handle != 0)
         {
-            info.soinfo = _kMgr->linkerScanner.findSoInfo("/memfd:" + memfd_rand);
-            info.elf = _kMgr->elfScanner.findElf("/memfd:" + memfd_rand, EScanElfType::Native);
+            info.soinfo = _kMgr->linkerScanner.findSoInfo("/memfd:" + memfdName);
+            info.elf = _kMgr->elfScanner.findElf("/memfd:" + memfdName, EScanElfType::Native);
             if (!info.elf.isValid())
             {
                 info.elf = _kMgr->elfScanner.createWithSoInfo(info.soinfo);
@@ -638,7 +638,7 @@ inject_elf_info_t KittyInjector::nativeInject(KittyIOFile &elfFile, bool *bCalld
     return info;
 }
 
-inject_elf_info_t KittyInjector::emuInject(KittyIOFile &elfFile, bool *bCalldlerror)
+inject_elf_info_t KittyInjector::emuInject(KittyIOFile &elfFile, const std::string &memfdName, bool *bCalldlerror)
 {
     _kMgr->nbScanner.init();
 
@@ -769,10 +769,9 @@ inject_elf_info_t KittyInjector::emuInject(KittyIOFile &elfFile, bool *bCalldler
     };
 
     auto do_memfd_dlopen = [&]() -> void {
-        std::string memfd_rand = KittyUtils::String::random(KittyUtils::randInt(5, 12));
-        KITTY_LOGI("emuInject: memfd Name (\"%s\").", memfd_rand.c_str());
+        KITTY_LOGI("emuInject: memfd Name (\"%s\").", memfdName.c_str());
 
-        if (!_kMgr->writeMemStr(_rbuffer, memfd_rand))
+        if (!_kMgr->writeMemStr(_rbuffer, memfdName))
         {
             KITTY_LOGE("emuInject: Failed to write memfd name into stack!");
             return;
@@ -804,8 +803,8 @@ inject_elf_info_t KittyInjector::emuInject(KittyIOFile &elfFile, bool *bCalldler
             // init nb scanner after emu dlopen
             _kMgr->nbScanner.init();
 
-            info.soinfo = _kMgr->nbScanner.findSoInfo("/memfd:" + memfd_rand);
-            info.elf = _kMgr->elfScanner.findElf("/memfd:" + memfd_rand, EScanElfType::Emulated);
+            info.soinfo = _kMgr->nbScanner.findSoInfo("/memfd:" + memfdName);
+            info.elf = _kMgr->elfScanner.findElf("/memfd:" + memfdName, EScanElfType::Emulated);
             if (!info.elf.isValid())
             {
                 info.elf = _kMgr->elfScanner.createWithSoInfo(info.soinfo);
