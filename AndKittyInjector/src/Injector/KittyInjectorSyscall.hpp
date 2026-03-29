@@ -51,7 +51,7 @@ class KittyRemoteSys
     KittyMemoryMgr *_kMgr;
     KittyPtrValidator _ptrValidator;
 
-    std::string _lastSyscallError;
+    std::string _lastError;
 
 public:
     KittyRemoteSys() : _kMgr(nullptr)
@@ -79,10 +79,10 @@ public:
 
     inline int rgetpid()
     {
-        int ret = _kMgr->trace.callSyscall(syscall_getpid_n);
+        int ret = _kMgr->trace.callSyscall(syscall_getpid_n).result.val;
         if (ret < 0)
         {
-            _lastSyscallError = strerror(ret);
+            _lastError = strerror(-ret);
         }
         return ret;
     }
@@ -92,17 +92,17 @@ public:
         if (!_kMgr || !_kMgr->isMemValid())
             return 0;
 
-        intptr_t remoteMem = _kMgr->trace.callSyscall(syscall_mmap_n, addr, size, prot, flags, fd, offset);
-        if (!_ptrValidator.isPtrInAddressSpace(remoteMem))
+        auto ret = _kMgr->trace.callSyscall(syscall_mmap_n, addr, size, prot, flags, fd, offset);
+        if (ret.status != KT_RP_CALL_SUCCESS || !_ptrValidator.isPtrInAddressSpace(ret.result.ptr))
         {
-            if (remoteMem < 0)
+            if (ret.result.val < 0)
             {
-                _lastSyscallError = strerror(-int(remoteMem));
+                _lastError = strerror(-int(ret.result.val));
             }
             return 0;
         }
 
-        return remoteMem;
+        return ret.result.ptr;
     }
 
     inline bool rmunmap(uintptr_t ptr, uintptr_t size)
@@ -110,12 +110,12 @@ public:
         if (!ptr || !size || !_kMgr || !_kMgr->isMemValid())
             return false;
 
-        int ret = _kMgr->trace.callSyscall(syscall_munmap_n, ptr, size);
-        if (ret < 0)
+        auto ret = _kMgr->trace.callSyscall(syscall_munmap_n, ptr, size);
+        if (ret.result.val < 0)
         {
-            _lastSyscallError = strerror(-ret);
+            _lastError = strerror(-ret.result.val);
         }
-        return ret == 0;
+        return ret.status == KT_RP_CALL_SUCCESS && ret.result.val == 0;
     }
 
     inline bool rmprotect(uintptr_t ptr, size_t size, int prot)
@@ -123,12 +123,12 @@ public:
         if (!ptr || !size || !_kMgr || !_kMgr->isMemValid())
             return false;
 
-        int ret = _kMgr->trace.callSyscall(syscall_mprotect_n, ptr, size, prot);
-        if (ret < 0)
+        auto ret = _kMgr->trace.callSyscall(syscall_mprotect_n, ptr, size, prot);
+        if (ret.result.val < 0)
         {
-            _lastSyscallError = strerror(-ret);
+            _lastError = strerror(-ret.result.val);
         }
-        return ret == 0;
+        return ret.status == KT_RP_CALL_SUCCESS && ret.result.val == 0;
     }
 
     inline int rmemfd_create(uintptr_t rname, unsigned int flags)
@@ -136,25 +136,25 @@ public:
         if (!_kMgr || !_kMgr->isMemValid())
             return 0;
 
-        int ret = _kMgr->trace.callSyscall(syscall_memfd_create_n, rname, flags);
-        if (ret < 0)
+        auto ret = _kMgr->trace.callSyscall(syscall_memfd_create_n, rname, flags);
+        if (ret.result.val < 0)
         {
-            _lastSyscallError = strerror(-ret);
+            _lastError = strerror(-ret.result.val);
         }
-        return ret;
+        return ret.result.val;
     }
 
-    inline int rmemfd_seal(int rmemfd, unsigned long seals)
+    inline bool rmemfd_seal(int rmemfd, unsigned long seals)
     {
         if (!_kMgr || !_kMgr->isMemValid())
             return 0;
 
-        int ret = _kMgr->trace.callSyscall(syscall_fcntl_n, rmemfd, F_ADD_SEALS, seals);
-        if (ret < 0)
+        auto ret = _kMgr->trace.callSyscall(syscall_fcntl_n, rmemfd, F_ADD_SEALS, seals);
+        if (ret.result.val < 0)
         {
-            _lastSyscallError = strerror(-ret);
+            _lastError = strerror(-ret.result.val);
         }
-        return ret;
+        return ret.status == KT_RP_CALL_SUCCESS && ret.result.val == 0;
     }
 
     inline int rprctl(int option, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
@@ -162,17 +162,22 @@ public:
         if (!_kMgr || !_kMgr->isMemValid())
             return 0;
 
-        int ret = _kMgr->trace.callSyscall(syscall_prctl_n, option, arg2, arg3, arg4, arg5);
-        if (ret < 0)
+        auto ret = _kMgr->trace.callSyscall(syscall_prctl_n, option, arg2, arg3, arg4, arg5);
+        if (ret.result.val < 0)
         {
-            _lastSyscallError = strerror(-ret);
+            _lastError = strerror(-ret.result.val);
         }
-        return ret;
+        return ret.result.val;
     }
 
-
-    inline std::string lastSyscallError() const
+    inline void clearLastError()
     {
-        return _lastSyscallError.empty() ? "null" : _lastSyscallError;
+        _lastError.clear();
+        _lastError.shrink_to_fit();
+    }
+
+    inline std::string lastError() const
+    {
+        return _lastError.empty() ? "null" : _lastError;
     }
 };

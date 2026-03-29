@@ -32,7 +32,7 @@
     }
 
 #define kPROGRAM_NAME "AndKittyInjector"
-#define kPROGRAM_VER "5.0.2"
+#define kPROGRAM_VER "5.1.0"
 
 bool inject(int pid,
             const std::vector<std::string> &libs,
@@ -206,8 +206,17 @@ bool inject(int pid,
     // Manually initialize tracer to seize and interrupt as soon as possible
     kmgr.trace = KittyTraceMgr(pid, 0, true);
 
+    /*if (!kmgr.trace.stopAllThreads())
+    {
+        KITTY_LOGE("Failed to stop all threads of target process.");
+        kmgr.trace.detach();
+        return false;
+    }
+
+    KITTY_LOGI("Stopped all threads of target process successfully.");*/
+
     errno = 0;
-    bool attached = cfg.seize = cfg.sdk >= 24 && kmgr.trace.seize(PTRACE_O_EXITKILL | PTRACE_O_TRACESYSGOOD);
+    bool attached = cfg.seize = cfg.sdk >= 21 && kmgr.trace.seize(PTRACE_O_EXITKILL | PTRACE_O_TRACESYSGOOD);
     if (!attached)
     {
         attached = kmgr.trace.attach(PTRACE_O_EXITKILL | PTRACE_O_TRACESYSGOOD);
@@ -219,16 +228,14 @@ bool inject(int pid,
         return false;
     }
 
-    KITTY_LOGI("Attached to process successfully.");
-
-    if ((cfg.seize && !kmgr.trace.interrupt()) || !kmgr.trace.waitSyscall())
+    if (cfg.seize && !kmgr.trace.stop())
     {
         KITTY_LOGE("Failed to interrupt process.");
         kmgr.trace.detach();
         return false;
     }
 
-    KITTY_LOGI("Interrupted process successfully.");
+    KITTY_LOGI("Attached to process successfully.");
 
     KITTY_LOGI("Initializing Injector...");
 
@@ -305,8 +312,9 @@ bool inject(int pid,
 
     inj_ms = std::chrono::high_resolution_clock::now() - tm_start;
 
-    kmgr.trace.waitSyscall();
+    //kmgr.trace.waitSyscall();
     kmgr.trace.detach();
+    // kmgr.trace.contAllThreads();
 
     return true;
 }
@@ -316,6 +324,18 @@ bool inject_watch(const std::vector<std::string> &libs, inject_elf_config_t &cfg
     bool result = false;
     int pid = 0;
     errno = 0;
+    int inotifyFd = -1;
+
+    if (!cfg.bp)
+    {
+        inotifyFd = inotify_init1(IN_CLOEXEC);
+        if (inotifyFd < 0)
+        {
+            KITTY_LOGE("Failed to initialize inotify. \"%s\".", strerror(errno));
+            exit(1);
+        }
+    }
+
     Utils::am_process_start([&](const android_event_am_proc_start *event) -> bool {
         if (int(cfg.package.length()) != event->process_name.length)
             return false;
@@ -324,28 +344,23 @@ bool inject_watch(const std::vector<std::string> &libs, inject_elf_config_t &cfg
 
         pid = event->pid.data;
 
+        if (cfg.bp)
+        {
+            if (cfg.delay > 0)
+                SLEEP_MICROS(cfg.delay);
+
+            result = inject(pid, libs, cfg, out);
+        }
         // inject on any event that isn't related to fd or timer
         // this delays injection for linker init
         // not used when --bp is used
-
-        if (!cfg.bp)
+        else
         {
-            int inotifyFd = inotify_init1(IN_CLOEXEC);
-            if (inotifyFd < 0)
-            {
-                KITTY_LOGE("Failed to initialize inotify. \"%s\".", strerror(errno));
-                exit(1);
-            }
-
             auto proc_dir = KittyUtils::String::fmt("/proc/%d", pid);
             bool proc_dir_watch = Utils::inotify_watch_directory(inotifyFd,
                                                                  proc_dir,
                                                                  IN_ALL_EVENTS,
                                                                  [&](int, struct inotify_event *iev) -> bool {
-                                                                     /*KITTY_LOGI("mask=0x%x | event=%s",
-                                                                                iev->mask,
-                                                                                iev->len > 0 ? iev->name : "null");*/
-
                                                                      // skip fd event
                                                                      if (iev->len >= 2 &&
                                                                          *(uint16_t *)iev->name == 0x6466)
@@ -356,25 +371,29 @@ bool inject_watch(const std::vector<std::string> &libs, inject_elf_config_t &cfg
                                                                          *(uint32_t *)iev->name == 0x656d6974)
                                                                          return false;
 
+                                                                     if (cfg.delay > 0)
+                                                                         SLEEP_MICROS(cfg.delay);
+
+                                                                     result = inject(pid, libs, cfg, out);
+
                                                                      return true;
                                                                  });
 
-            close(inotifyFd);
-
             if (!proc_dir_watch)
             {
+                if (inotifyFd > -1)
+                    close(inotifyFd);
+                
                 KITTY_LOGE("Failed to add watch on process directory. last error = %s.", strerror(errno));
                 exit(1);
             }
         }
 
-        if (cfg.delay > 0)
-            SLEEP_MICROS(cfg.delay);
-
-        result = inject(pid, libs, cfg, out);
-
         return true;
     });
+
+    if (inotifyFd > -1)
+        close(inotifyFd);
 
     if (pid <= 0)
     {

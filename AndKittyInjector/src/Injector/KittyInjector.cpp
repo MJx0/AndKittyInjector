@@ -1,4 +1,5 @@
 #include "KittyInjector.hpp"
+#include <thread>
 
 #define kUSE_STACK_BUFFER 1
 
@@ -202,104 +203,41 @@ bool KittyInjector::waitBreakpoint(bool needsNB)
 
     KITTY_LOGI("Injector: Creating breakpoint at %p...", (void *)bp_addr);
 
-    KittyPerfTrap perf{};
+    auto bp_ok = [&](user_regs_struct *regs) -> bool {
+        uintptr_t arg0 = _kMgr->trace.getArgFromRegs<uintptr_t>(regs, 0);
+        uintptr_t arg1 = _kMgr->trace.getArgFromRegs<uintptr_t>(regs, 1);
 
-#if defined(__arm__) || defined(__aarch64__)
-    KT_WATCH_LEN bpLen = KT_PERFWATCH_LEN_4;
-#else
-    KT_WATCH_LEN bpLen = KittyUtils::is64BitSupported() ? KT_PERFWATCH_LEN_8 : KT_PERFWATCH_LEN_4;
-#endif
+        std::string filePath = _kMgr->readMemStr(arg0, 0xff);
+        int flags = arg1;
 
-    if (!perf.add(_kMgr->processID(), bp_addr, KT_PERFWATCH_X, bpLen))
-    {
-        perf.clear();
-        std::string err = errno == 0 ? "" : strerror(errno);
-        KITTY_LOGW("Injector: Failed to add perf_event(%p) \"%s\".", (void *)bp_addr, err.c_str());
+        KITTY_LOGI("bp]: dlopen(%s, %d)", filePath.c_str(), flags);
 
-        KITTY_LOGI("Injector: Trying software breakpoint...");
-        return _kMgr->trace.softTrapWait(bp_addr, [](user_regs_struct) -> bool { return true; });
-    }
+        std::string pc_map = KittyMemoryEx::getAddressMap(_kMgr->processID(), regs->KT_REG_PC).toString();
+        KITTY_LOGI("bp]: PC(%p) -> %s", (void *)regs->KT_REG_PC, pc_map.c_str());
 
-    _kMgr->trace.cont();
+        uintptr_t ret_addr = _kMgr->trace.getReturnAddressFromRegs(regs);
+        std::string ret_map = KittyMemoryEx::getAddressMap(_kMgr->processID(), ret_addr).toString();
+        KITTY_LOGI("bp]: Return Address (%p) -> %s", (void *)ret_addr, ret_map.c_str());
 
-    // 3 seconds timeout
-    bool triggered = false;
-    perf.poll(3000, [&triggered](const KittyPerfSample &s) -> bool {
-        KITTY_LOGI("PerfSample: IP(%p) ADDR(%p)", (void *)s.ip, (void *)s.addr);
-        triggered = s.addr != 0;
-        return true;
-    });
-
-    perf.clear();
-
-    if (!triggered)
-    {
-        KITTY_LOGE("Injector: Breakpoint timedout!");
-        if (_cfg.seize)
-            _kMgr->trace.interrupt();
-        return false;
-    }
-
-    errno = 0;
-    int status = 0;
-    if (waitpid(_kMgr->processID(), &status, __WALL | WNOHANG) < 0)
-    {
-        KITTY_LOGE("Injector: waitpid failed. error(\"%s\").", strerror(errno));
-        return false;
-    }
-
-    if (WIFEXITED(status))
-    {
-        KITTY_LOGE("Injector: Target process exited (%d).", WEXITSTATUS(status));
-        return false;
-    }
-
-    if (WIFSIGNALED(status))
-    {
-        KITTY_LOGE("Injector: Target process terminated (%d).", WTERMSIG(status));
-        return false;
-    }
-
-    if (!WIFSTOPPED(status))
-    {
-        if (_cfg.seize)
-            _kMgr->trace.interrupt();
-        KITTY_LOGE("Injector: Target process didn't stop at breakpoint!");
-        return false;
-    }
-
-    if (WSTOPSIG(status) != SIGTRAP)
-    {
-        if (_cfg.seize)
-            _kMgr->trace.interrupt();
-        KITTY_LOGE("Injector: Target process stopped with (%s) instead of SIGTRAP.", strsignal(WSTOPSIG(status)));
-        return false;
-    }
+        return !KittyUtils::String::contains(filePath, "nativebridge");
+    };
 
 #if 0
-
-    user_regs_struct regs{};
-    _kMgr->trace.getRegs(&regs);
-
-#if defined(__x86_64__)
-    KITTY_LOGI("rdi(%p -> %s)", (void *)regs.rdi, _kMgr->readMemStr(regs.rdi, 0xff).c_str());
-#elif defined(__arm__)
-    KITTY_LOGI("r0(%p -> %s)", (void *)regs.uregs[0], _kMgr->readMemStr(regs.uregs[0], 0xff).c_str());
-#elif defined(__aarch64__)
-    KITTY_LOGI("r0(%p -> %s)", (void *)regs.regs[0], _kMgr->readMemStr(regs.regs[0], 0xff).c_str());
+    KITTY_LOGI("Injector: Trying software breakpoint...");
+    return _kMgr->trace.setSoftBreakpointAndWait(
+               bp_addr,
+               [&](user_regs_struct bp_regs) -> bool { return bp_ok(&bp_regs); },
+               5000) == KT_BP_SUCCESS;
+#else
+    KITTY_LOGI("Injector: Trying hardware breakpoint...");
+    return _kMgr->trace.setHardBreakpointAndWait(
+               bp_addr,
+               KT_HW_BP_EXECUTE,
+               KT_HW_BP_SIZE_EXEC,
+               0,
+               [&](user_regs_struct bp_regs) -> bool { return bp_ok(&bp_regs); },
+               5000) == KT_BP_SUCCESS;
 #endif
-
-    std::string pc_map = KittyMemoryEx::getAddressMap(_kMgr->processID(), regs.KT_REG_PC).toString();
-    KITTY_LOGI("PC(%p) -> %s", (void *)regs.KT_REG_PC, pc_map.c_str());
-
-#if defined(__arm__) || defined(__aarch64__)
-    std::string lr_map = KittyMemoryEx::getAddressMap(_kMgr->processID(), regs.KT_REG_LR).toString();
-    KITTY_LOGI("LR(%p) -> %s", (void *)regs.KT_REG_LR, lr_map.c_str());
-#endif
-
-#endif
-
-    return true;
 }
 
 inject_elf_info_t KittyInjector::inject(const std::string &elfPath)
@@ -385,7 +323,7 @@ inject_elf_info_t KittyInjector::inject(const std::string &elfPath)
     if (!_rsyscall.testSyscall())
     {
         cleanUp();
-        KITTY_LOGE("Injector: Remote syscall test failed. errno(\"%s\").", _rsyscall.lastSyscallError().c_str());
+        KITTY_LOGE("Injector: Remote syscall test failed. errno(\"%s\").", _rsyscall.lastError().c_str());
         return {};
     }
 
@@ -393,7 +331,7 @@ inject_elf_info_t KittyInjector::inject(const std::string &elfPath)
     {
 #if kUSE_STACK_BUFFER
         uintptr_t backup_sp = backup_regs.KT_REG_SP;
-        KT_REGS_ALIGN_STACK_N(backup_regs, kREMOTE_BUFF_SIZE);
+        backup_regs.KT_REG_SP = KT_PAGE_START(backup_sp);
 
         if (!_kMgr->trace.setRegs(&backup_regs))
         {
@@ -497,34 +435,57 @@ inject_elf_info_t KittyInjector::inject(const std::string &elfPath)
     else if (bCalldlerror)
     {
         KITTY_LOGE("Injector: dlopen failed )':");
-        KITTY_LOGE("Injector: Calling dlerror...");
+        KITTY_LOGI("Injector: Calling dlerror...");
 
-        uintptr_t error_ret = 0xff;
+        kitty_rp_call_t error_ret;
 
-        if (!emulate)
+        if (!(emulate && _kMgr->nbScanner.nbItfData().version < KT_NB_NAMESPACE_VERSION))
         {
-            error_ret = _kMgr->trace.callFunctionFrom(_dl_caller, _rdlerror);
-        }
-        else if (_kMgr->nbScanner.nbItfData().version >= KT_NB_NAMESPACE_VERSION)
-        {
-            error_ret = _kMgr->trace.callFunction((uintptr_t)_kMgr->nbScanner.nbItfData().getError);
+            if (!emulate)
+            {
+                error_ret = _kMgr->trace.callFunctionFrom(emulate ? 0 : _dl_caller, _rdlerror);
+            }
+            else
+            {
+                error_ret = _kMgr->trace.callFunction((uintptr_t)_kMgr->nbScanner.nbItfData().getError);
+            }
+
+            if (error_ret.status == KT_RP_CALL_SUCCESS && error_ret.result.ptr != 0)
+            {
+                std::string error_str = _kMgr->readMemStr(error_ret.result.ptr, 0xff);
+                if (!error_str.empty())
+                {
+                    KITTY_LOGE("Injector: %s", error_str.c_str());
+
+                    if (_cfg.memfd && KittyUtils::String::contains(error_str, "library", false) &&
+                        KittyUtils::String::endsWith(error_str, "not found", false))
+                    {
+                        KITTY_LOGI("Injector: memfd dlopen might not be supported.");
+                    }
+
+                    else if (!_cfg.memfd && KittyUtils::String::contains(error_str, "couldn't map", false) &&
+                             KittyUtils::String::endsWith(error_str, "Permission denied", false))
+                    {
+                        KITTY_LOGI("Injector: Maybe use memfd or disable SELinux.");
+                    }
+                }
+                else
+                {
+                    KITTY_LOGE("Injector: Failed to read dlerror string.");
+                }
+            }
+            else if (error_ret.status != KT_RP_CALL_SUCCESS)
+            {
+                KITTY_LOGE("Injector: Failed to call dlerror.");
+            }
+            else if (error_ret.result.ptr == 0)
+            {
+                KITTY_LOGE("Injector: dlerror returned 0.");
+            }
         }
         else
         {
             KITTY_LOGW("Injector: dlerror not available.");
-        }
-
-        if (error_ret != 0 && error_ret != 0xff)
-        {
-            std::string error_str = _kMgr->readMemStr(error_ret, 0xff);
-            if (!error_str.empty())
-                KITTY_LOGE("Injector: %s", error_str.c_str());
-            else
-                KITTY_LOGE("Injector: Failed to read dlerror string.");
-        }
-        else if (error_ret == 0)
-        {
-            KITTY_LOGE("Injector: dlerror returned 0.");
         }
     }
 
@@ -545,7 +506,14 @@ inject_elf_info_t KittyInjector::nativeInject(KittyIOFile &elfFile, bool *bCalld
             return;
         }
 
-        info.dl_handle = _kMgr->trace.callFunctionFrom(_dl_caller, _rdlopen, _rbuffer, _cfg.rtdl_flags);
+        auto ret = _kMgr->trace.callFunctionFrom(_dl_caller, _rdlopen, _rbuffer, _cfg.rtdl_flags);
+        if (ret.status != KT_RP_CALL_SUCCESS)
+        {
+            KITTY_LOGE("nativeInject: Failed to call dlopen.");
+            return;
+        }
+
+        info.dl_handle = ret.result.ptr;
         if (info.dl_handle != 0)
         {
             info.soinfo = _kMgr->linkerScanner.findSoInfo(elfFile.path());
@@ -575,7 +543,7 @@ inject_elf_info_t KittyInjector::nativeInject(KittyIOFile &elfFile, bool *bCalld
         int rmemfd = _rsyscall.rmemfd_create(_rbuffer, MFD_CLOEXEC | MFD_ALLOW_SEALING);
         if (rmemfd <= 0)
         {
-            KITTY_LOGE("nativeInject: memfd_create failed, errno (\"%s\").", _rsyscall.lastSyscallError().c_str());
+            KITTY_LOGE("nativeInject: memfd_create failed, errno (\"%s\").", _rsyscall.lastError().c_str());
             return;
         }
 
@@ -604,7 +572,14 @@ inject_elf_info_t KittyInjector::nativeInject(KittyIOFile &elfFile, bool *bCalld
             return;
         }
 
-        info.dl_handle = _kMgr->trace.callFunctionFrom(_dl_caller, _rdlopen_ext, _rbuffer, _cfg.rtdl_flags, rdlextinfo);
+        auto ret = _kMgr->trace.callFunctionFrom(_dl_caller, _rdlopen_ext, _rbuffer, _cfg.rtdl_flags, rdlextinfo);
+        if (ret.status != KT_RP_CALL_SUCCESS)
+        {
+            KITTY_LOGE("nativeInject: Failed to call dlopen_ext.");
+            return;
+        }
+
+        info.dl_handle = ret.result.ptr;
         if (info.dl_handle != 0)
         {
             info.soinfo = _kMgr->linkerScanner.findSoInfo("/memfd:" + memfd_rand);
@@ -648,7 +623,7 @@ inject_elf_info_t KittyInjector::emuInject(KittyIOFile &elfFile, bool *bCalldler
     KITTY_LOGI("emuInject: NativeBridge version %d.", nbData.version);
 
     uintptr_t pNbInitialized = uintptr_t(nb.fnNativeBridgeInitialized);
-    if (pNbInitialized == 0 || _kMgr->trace.callFunction(pNbInitialized) == 0)
+    if (pNbInitialized == 0 || _kMgr->trace.callFunction(pNbInitialized).result.val == 0)
     {
         KITTY_LOGE("emuInject: NativeBridge is not initialized yet, maybe use --bp or --delay.");
         return {};
@@ -667,13 +642,13 @@ inject_elf_info_t KittyInjector::emuInject(KittyIOFile &elfFile, bool *bCalldler
     }
 
     // returns dl handle on success
-    auto emu_dlopen = [&](const std::string &path) -> uintptr_t {
+    auto emu_dlopen = [&](const std::string &path) -> kitty_rp_call_t {
         if (nbData.version < KT_NB_NAMESPACE_VERSION)
         {
             if (!_kMgr->writeMemStr(_rbuffer, path))
             {
                 KITTY_LOGE("emuInject: Failed to write lib path into stack!");
-                return 0;
+                return {KT_RP_CALL_MEM_FAILED, {0}};
             }
             return _kMgr->trace.callFunction((uintptr_t)nbData.loadLibrary, _rbuffer, _cfg.rtdl_flags);
         }
@@ -704,11 +679,17 @@ inject_elf_info_t KittyInjector::emuInject(KittyIOFile &elfFile, bool *bCalldler
                     if (!_kMgr->writeMemStr(_rbuffer, "classloader-namespace"))
                     {
                         KITTY_LOGE("emuInject: Failed to write classloader name into stack!");
-                        return 0;
+                        return {KT_RP_CALL_MEM_FAILED, {0}};
                     }
-                    uint8_t cls_ns = _kMgr->trace.callFunction((uintptr_t)nbData.getExportedNamespace, _rbuffer);
-                    if (cls_ns > 0 && cls_ns <= 25)
-                        ns = cls_ns;
+                    auto cls_ns = _kMgr->trace.callFunction((uintptr_t)nbData.getExportedNamespace, _rbuffer);
+                    if (cls_ns.status != KT_RP_CALL_SUCCESS)
+                    {
+                        KITTY_LOGE("emuInject: Failed to call getExportedNamespace.");
+                        return cls_ns;
+                    }
+
+                    if (cls_ns.result.ptr > 0 && cls_ns.result.ptr <= 25)
+                        ns = cls_ns.result.ptr;
                 }
             }
             else
@@ -719,14 +700,28 @@ inject_elf_info_t KittyInjector::emuInject(KittyIOFile &elfFile, bool *bCalldler
                     if (!_kMgr->writeMemStr(_rbuffer, "default"))
                     {
                         KITTY_LOGE("emuInject: Failed to write classloader default into stack!");
-                        return 0;
+                        return {KT_RP_CALL_MEM_FAILED, {0}};
                     }
 
-                    ns = _kMgr->trace.callFunction((uintptr_t)nbData.getExportedNamespace, _rbuffer);
+                    auto cls_ns = _kMgr->trace.callFunction((uintptr_t)nbData.getExportedNamespace, _rbuffer);
+                    if (cls_ns.status != KT_RP_CALL_SUCCESS)
+                    {
+                        KITTY_LOGE("emuInject: Failed to call getExportedNamespace.");
+                        return cls_ns;
+                    }
+
+                    ns = cls_ns.result.ptr;
                 }
                 else if (nbData.getVendorNamespace)
                 {
-                    ns = _kMgr->trace.callFunction((uintptr_t)nbData.getVendorNamespace);
+                    auto cls_ns = _kMgr->trace.callFunction((uintptr_t)nbData.getVendorNamespace);
+                    if (cls_ns.status != KT_RP_CALL_SUCCESS)
+                    {
+                        KITTY_LOGE("emuInject: Failed to call getVendorNamespace.");
+                        return cls_ns;
+                    }
+
+                    ns = cls_ns.result.ptr;
                 }
             }
 
@@ -735,20 +730,27 @@ inject_elf_info_t KittyInjector::emuInject(KittyIOFile &elfFile, bool *bCalldler
             if (!_kMgr->writeMemStr(_rbuffer, path))
             {
                 KITTY_LOGE("emuInject: Failed to write lib path into stack!");
-                return 0;
+                return {KT_RP_CALL_MEM_FAILED, {0}};
             }
 
             return _kMgr->trace.callFunction((uintptr_t)nbData.loadLibraryExt, _rbuffer, _cfg.rtdl_flags, ns);
         }
 
-        return 0;
+        return {KT_RP_CALL_FAILED, {0}};
     };
 
     inject_elf_info_t info{};
     info.is_native = false;
 
     auto do_legacy_dlopen = [&]() -> void {
-        info.dl_handle = emu_dlopen(elfFile.path());
+        auto ret = emu_dlopen(elfFile.path());
+        if (ret.status != KT_RP_CALL_SUCCESS)
+        {
+            KITTY_LOGE("nativeInject: Failed to call native bridge loadLibary.");
+            return;
+        }
+
+        info.dl_handle = ret.result.ptr;
         if (info.dl_handle != 0)
         {
             // init nb scanner after emu dlopen
@@ -781,7 +783,7 @@ inject_elf_info_t KittyInjector::emuInject(KittyIOFile &elfFile, bool *bCalldler
         int rmemfd = _rsyscall.rmemfd_create(_rbuffer, MFD_CLOEXEC | MFD_ALLOW_SEALING);
         if (rmemfd <= 0)
         {
-            KITTY_LOGE("emuInject: memfd_create failed, errno = %s.", _rsyscall.lastSyscallError().c_str());
+            KITTY_LOGE("emuInject: memfd_create failed, errno = %s.", _rsyscall.lastError().c_str());
             return;
         }
 
@@ -798,7 +800,14 @@ inject_elf_info_t KittyInjector::emuInject(KittyIOFile &elfFile, bool *bCalldler
         // restrict further modifications to remote memfd
         _rsyscall.rmemfd_seal(rmemfd, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_SEAL);
 
-        info.dl_handle = emu_dlopen(rmemfdPath);
+        auto ret = emu_dlopen(rmemfdPath);
+        if (ret.status != KT_RP_CALL_SUCCESS)
+        {
+            KITTY_LOGE("nativeInject: Failed to call native bridge loadLibaryExt.");
+            return;
+        }
+
+        info.dl_handle = ret.result.ptr;
         if (info.dl_handle != 0)
         {
             // init nb scanner after emu dlopen
@@ -843,20 +852,20 @@ inject_elf_info_t KittyInjector::emuInject(KittyIOFile &elfFile, bool *bCalldler
 
         if (nbData.version < KT_NB_CRITICAL_NATIVE_SUPPORT_VERSION || !nbData.getTrampolineWithJNICallType)
         {
-            info.pJNI_OnLoad = _kMgr->trace.callFunction((uintptr_t)(nbData.getTrampoline),
-                                                         info.dl_handle,
-                                                         _rbuffer,
-                                                         0,
-                                                         0);
+            info.pJNI_OnLoad = _kMgr->trace
+                                   .callFunction((uintptr_t)(nbData.getTrampoline), info.dl_handle, _rbuffer, 0, 0)
+                                   .result.ptr;
         }
         else
         {
-            info.pJNI_OnLoad = _kMgr->trace.callFunction((uintptr_t)(nbData.getTrampolineWithJNICallType),
-                                                         info.dl_handle,
-                                                         _rbuffer,
-                                                         0,
-                                                         0,
-                                                         KT_JNICallTypeRegular);
+            info.pJNI_OnLoad = _kMgr->trace
+                                   .callFunction((uintptr_t)(nbData.getTrampolineWithJNICallType),
+                                                 info.dl_handle,
+                                                 _rbuffer,
+                                                 0,
+                                                 0,
+                                                 KT_JNICallTypeRegular)
+                                   .result.ptr;
         }
     }
 
@@ -868,7 +877,7 @@ bool KittyInjector::unloadLibrary(inject_elf_info_t &injected)
     if (!injected.is_valid())
         return false;
 
-    intptr_t freed = 1;
+    kitty_rp_call_t freed;
 
     if (injected.is_native)
     {
@@ -879,7 +888,7 @@ bool KittyInjector::unloadLibrary(inject_elf_info_t &injected)
         freed = _kMgr->trace.callFunction((uintptr_t)(_kMgr->nbScanner.nbItfData().unloadLibrary), injected.dl_handle);
     }
 
-    return freed == 0;
+    return freed.status == KT_RP_CALL_SUCCESS && freed.result.val == 0;
 }
 
 bool KittyInjector::hideLibrary(inject_elf_info_t &injected)
@@ -956,35 +965,44 @@ bool KittyInjector::hideLibrary(inject_elf_info_t &injected)
             return false;
         }
 
-        kitty_soinfo_t prev = {};
-        for (auto &it : solist)
+        uintptr_t soinfo_replace_ptr = 0;
+        if (solist[0].ptr == injected.soinfo.ptr)
         {
-            if (it.next == injected.soinfo.ptr)
+            soinfo_replace_ptr = injected.soinfo.next;
+        }
+        else
+        {
+            for (auto &it : solist)
             {
-                prev = it;
-                break;
+                if (it.next == injected.soinfo.ptr)
+                {
+                    soinfo_replace_ptr = it.ptr;
+                    break;
+                }
             }
-        }
 
-        if (!prev.ptr)
-        {
-            KITTY_LOGE("hideLibrary: Failed to find emulated prev soinfo!");
-            return false;
-        }
+            if (!soinfo_replace_ptr)
+            {
+                KITTY_LOGE("hideLibrary: Failed to find emulated prev soinfo!");
+                return false;
+            }
 
-        uintptr_t si_next_offset = _kMgr->nbScanner.soinfo_offsets().next;
-        if (!si_next_offset)
-        {
-            KITTY_LOGE("hideLibrary: Emulated soinfo next offset not found!");
-            return false;
-        }
+            uintptr_t si_next_offset = _kMgr->nbScanner.soinfo_offsets().next;
+            if (!si_next_offset)
+            {
+                KITTY_LOGE("hideLibrary: Emulated soinfo next offset not found!");
+                return false;
+            }
 
-        if (!_kMgr->memPatch
-                 .createWithBytes(prev.ptr + si_next_offset, &injected.soinfo.next, sizeof(injected.soinfo.next))
-                 .Modify())
-        {
-            KITTY_LOGE("SoInfoPatch: Failed to patch emulated prev soinfo next!");
-            return false;
+            if (!_kMgr->memPatch
+                     .createWithBytes(soinfo_replace_ptr + si_next_offset,
+                                      &injected.soinfo.next,
+                                      sizeof(injected.soinfo.next))
+                     .Modify())
+            {
+                KITTY_LOGE("SoInfoPatch: Failed to patch emulated prev soinfo next!");
+                return false;
+            }
         }
 
         auto sonext_refs = findNbSoInfoRefs(injected.soinfo);
@@ -996,7 +1014,7 @@ bool KittyInjector::hideLibrary(inject_elf_info_t &injected)
 
         for (auto &ref : sonext_refs)
         {
-            if (!_kMgr->memPatch.createWithBytes(ref, &prev.ptr, sizeof(prev.ptr)).Modify())
+            if (!_kMgr->memPatch.createWithBytes(ref, &soinfo_replace_ptr, sizeof(soinfo_replace_ptr)).Modify())
             {
                 KITTY_LOGE("SoInfoPatch: Failed to patch emulated sonext!");
                 return false;
@@ -1027,7 +1045,7 @@ bool KittyInjector::hideLibrary(inject_elf_info_t &injected)
         {
             KITTY_LOGE("hideLibrary: Failed to unmap segment %p, \"%s\".",
                        (void *)it.startAddress,
-                       _rsyscall.lastSyscallError().c_str());
+                       _rsyscall.lastError().c_str());
             return false;
         }
 
@@ -1041,7 +1059,7 @@ bool KittyInjector::hideLibrary(inject_elf_info_t &injected)
         {
             KITTY_LOGE("hideLibrary: Failed to remap segment %p, \"%s\".",
                        (void *)it.startAddress,
-                       _rsyscall.lastSyscallError().c_str());
+                       _rsyscall.lastError().c_str());
             return false;
         }
 
@@ -1072,7 +1090,8 @@ uintptr_t KittyInjector::getJavaVM(inject_elf_info_t &injected)
         return false;
     }
 
-    jint status = _kMgr->trace.callFunction(pJNI_GetCreatedJavaVMs, _rbuffer, 1, _rbuffer + sizeof(uintptr_t));
+    jint status = _kMgr->trace.callFunction(pJNI_GetCreatedJavaVMs, _rbuffer, 1, _rbuffer + sizeof(uintptr_t))
+                      .result.val;
 
     uintptr_t pJvm = 0;
     jsize nJvms = 0;
@@ -1117,7 +1136,7 @@ bool KittyInjector::callEntryPoint(inject_elf_info_t &injected)
                (void *)injected.pJvm,
                injected.secretKey);
 
-    jint ret = _kMgr->trace.callFunction(injected.pJNI_OnLoad, injected.pJvm, injected.secretKey);
+    jint ret = _kMgr->trace.callFunction(injected.pJNI_OnLoad, injected.pJvm, injected.secretKey).result.val;
 
     KITTY_LOGI("callEntryPoint: Calling JNI_OnLoad(%p, %d) returned 0x%x.",
                (void *)injected.pJvm,
@@ -1247,8 +1266,8 @@ std::vector<uintptr_t> KittyInjector::findNbSoInfoRefs(const kitty_soinfo_t &soi
 
     for (auto &it : maps)
     {
-        bool check1 = (it.is_ro && KittyUtils::String::startsWith(it.pathname, "[anon:Mem_"));
-        bool check2 = (it.is_ro && it.pathname == "[anon:linker_alloc]");
+        bool check1 = (it.readable && KittyUtils::String::startsWith(it.pathname, "[anon:Mem_"));
+        bool check2 = (it.readable && it.pathname == "[anon:linker_alloc]");
         if (!check1 && !check2)
             continue;
 
