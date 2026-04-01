@@ -57,7 +57,7 @@ struct inject_elf_config_t
 {
     int sdk, rtdl_flags, delay;
     bool watch, launch, seize, bp, memfd, free, hide;
-    std::string package;
+    std::string package, memfd_name;
     std::function<void(inject_elf_info_t &injected)> beforeEntryPoint, afterEntryPoint;
 
     inject_elf_config_t()
@@ -103,11 +103,11 @@ public:
 
     bool validateElf(const std::string &elfPath, KT_ElfW(Ehdr) * hdr, bool *needsNB);
     bool waitBreakpoint(bool needsNB);
-    inject_elf_info_t inject(const std::string &elfPath);
+    inject_elf_info_t inject(const std::string &elfPath, const std::string &memfdName);
 
 private:
-    inject_elf_info_t nativeInject(KittyIOFile &elfFile, bool *bCalldlerror = nullptr);
-    inject_elf_info_t emuInject(KittyIOFile &elfFile, bool *bCalldlerror = nullptr);
+    inject_elf_info_t nativeInject(KittyIOFile &elfFile, const std::string &memfdName, bool *bCalldlerror = nullptr);
+    inject_elf_info_t emuInject(KittyIOFile &elfFile, const std::string &memfdName, bool *bCalldlerror = nullptr);
 
     bool unloadLibrary(inject_elf_info_t &injected);
     bool hideLibrary(inject_elf_info_t &injected);

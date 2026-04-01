@@ -83,6 +83,11 @@ int main(int argc, char *args[])
 
     program.add_argument("--memfd").help("Use memfd dlopen.").store_into(inj_cfg.memfd);
 
+    program.add_argument("--memfd-name")
+           .help("Set a specific name for the created memfd.")
+           .store_into(inj_cfg.memfd_name)
+           .metavar("<name>");
+
     program.add_argument("--free").help("Unload library after entry point execution.").store_into(inj_cfg.free);
 
     program.add_argument("--hide")
@@ -100,6 +105,10 @@ int main(int argc, char *args[])
         return 1;
     }
 
+    if (inj_cfg.memfd_name.empty()) {
+        inj_cfg.memfd_name = KittyUtils::String::random(KittyUtils::randInt(5, 12));
+    }
+
     KITTY_LOGI("======== INJECTION ARGS ========");
     KITTY_LOGI("package: %s", inj_cfg.package.c_str());
     KITTY_LOGI("sdk: %d", inj_cfg.sdk);
@@ -108,6 +117,7 @@ int main(int argc, char *args[])
     KITTY_LOGI("bp: %d", inj_cfg.bp);
     KITTY_LOGI("delay: %d", inj_cfg.delay);
     KITTY_LOGI("memfd: %d", inj_cfg.memfd ? 1 : 0);
+    KITTY_LOGI("memfd name: %s", inj_cfg.memfd_name.c_str());
     KITTY_LOGI("free: %d", inj_cfg.free);
     KITTY_LOGI("hide: %d", inj_cfg.hide ? 1 : 0);
     for (size_t i = 0; i < libs.size(); i++)
@@ -297,7 +307,7 @@ bool inject(int pid,
     {
         KITTY_LOGI("===== Injecting %s...", it.c_str());
 
-        auto info = injector.inject(it);
+        auto info = injector.inject(it, cfg.memfd_name);
         if (!info.is_valid())
         {
             KITTY_LOGE("===== Failed to inject %s!", it.c_str());
