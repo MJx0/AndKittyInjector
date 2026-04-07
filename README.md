@@ -45,8 +45,8 @@ Optional arguments:
 
 Example:
 ```shell
-# launching app and injecting 2 libs with 1 second delay
-./AndKittyInjector --package com.target.package --libs path/to/lib1 path/to/lib2 --memfd --launch --delay 1000000
+# launching app and injecting 2 libs with 1 second delay and timeout 3 seconds
+./AndKittyInjector --package com.target.package --libs path/to/lib1 path/to/lib2 --memfd --launch --delay 1000000 --timeout 3000
 ```
 
 <h2>Notes: </h2>
