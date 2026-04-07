@@ -97,5 +97,5 @@ extern "C"
 
 namespace Utils
 {
-    bool am_process_start(std::function<bool(const android_event_am_proc_start *)> cb);
+    bool am_process_start_callback(std::function<void()> init_cb, std::function<bool(const android_event_am_proc_start *)> cb);
 } // namespace Utils

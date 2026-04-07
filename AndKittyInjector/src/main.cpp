@@ -32,7 +32,7 @@
     }
 
 #define kPROGRAM_NAME "AndKittyInjector"
-#define kPROGRAM_VER "5.1.0"
+#define kPROGRAM_VER "5.2.0"
 
 bool inject(int pid,
             const std::vector<std::string> &libs,
@@ -52,7 +52,7 @@ int main(int argc, char *args[])
 
     inject_elf_config_t inj_cfg = {};
 
-    inj_cfg.sdk = KittyUtils::getAndroidSDK();
+    inj_cfg.sdk = KittyUtils::Android::getSDK();
     inj_cfg.seize = inj_cfg.sdk >= 24;
     inj_cfg.rtdl_flags = RTLD_LOCAL | RTLD_NOW;
 
@@ -74,19 +74,24 @@ int main(int argc, char *args[])
 
     program.add_argument("--watch").help("Monitor process start then inject.").store_into(inj_cfg.watch);
 
-    program.add_argument("--bp").help("Inject after breakpoint hit.").store_into(inj_cfg.bp);
+    program.add_argument("--bp").help("Inject after native/emulated dlopen breakpoint hit.").store_into(inj_cfg.bp);
 
     program.add_argument("--delay")
         .help("Delay injection in microseconds.")
         .store_into(inj_cfg.delay)
         .metavar("<micros>");
 
+    program.add_argument("--timeout")
+        .help("Timeout for ptrace remote calls in milliseconds.")
+        .store_into(inj_cfg.timeout)
+        .metavar("<ms>");
+
     program.add_argument("--memfd").help("Use memfd dlopen.").store_into(inj_cfg.memfd);
 
     program.add_argument("--free").help("Unload library after entry point execution.").store_into(inj_cfg.free);
 
     program.add_argument("--hide")
-        .help("Remove soinfo and remap library to anonymouse memory.")
+        .help("Remove soinfo from solist/sonext, remap library to anonymouse memory and randomize ELF header.")
         .store_into(inj_cfg.hide);
 
     try
@@ -106,7 +111,8 @@ int main(int argc, char *args[])
     KITTY_LOGI("launch: %d", inj_cfg.launch ? 1 : 0);
     KITTY_LOGI("watch: %d", inj_cfg.watch ? 1 : 0);
     KITTY_LOGI("bp: %d", inj_cfg.bp);
-    KITTY_LOGI("delay: %d", inj_cfg.delay);
+    KITTY_LOGI("delay: %dus", inj_cfg.delay);
+    KITTY_LOGI("timeout: %dms", inj_cfg.timeout);
     KITTY_LOGI("memfd: %d", inj_cfg.memfd ? 1 : 0);
     KITTY_LOGI("free: %d", inj_cfg.free);
     KITTY_LOGI("hide: %d", inj_cfg.hide ? 1 : 0);
@@ -125,25 +131,18 @@ int main(int argc, char *args[])
         {
             Utils::android_stop_app(inj_cfg.package);
 
+            int pid = KittyMemoryEx::getProcessID(inj_cfg.package);
+            if (pid > 0)
+            {
+                kill(pid, SIGKILL);
+            }
+
             if (KittyMemoryEx::getProcessID(inj_cfg.package) > 0)
             {
                 KITTY_LOGE("--%s is used but the target process is already alive.",
                            inj_cfg.launch ? "launch" : "watch");
                 exit(1);
             }
-        }
-
-        if (inj_cfg.launch)
-        {
-            std::thread([&inj_cfg]() -> void {
-                // wait for process monitor to execute
-                SLEEP_SECONDS(1);
-                if (!Utils::android_launch_app(inj_cfg.package))
-                {
-                    KITTY_LOGE("Failed to launch app %s!", inj_cfg.package.c_str());
-                    exit(1);
-                }
-            }).detach();
         }
 
         KITTY_LOGI("Monitoring %s...", inj_cfg.package.c_str());
@@ -312,7 +311,7 @@ bool inject(int pid,
 
     inj_ms = std::chrono::high_resolution_clock::now() - tm_start;
 
-    //kmgr.trace.waitSyscall();
+    kmgr.trace.waitSyscall();
     kmgr.trace.detach();
     // kmgr.trace.contAllThreads();
 
@@ -336,61 +335,78 @@ bool inject_watch(const std::vector<std::string> &libs, inject_elf_config_t &cfg
         }
     }
 
-    Utils::am_process_start([&](const android_event_am_proc_start *event) -> bool {
-        if (int(cfg.package.length()) != event->process_name.length)
-            return false;
-        if (strncmp(event->process_name.data, cfg.package.c_str(), cfg.package.length()))
-            return false;
-
-        pid = event->pid.data;
-
-        if (cfg.bp)
-        {
-            if (cfg.delay > 0)
-                SLEEP_MICROS(cfg.delay);
-
-            result = inject(pid, libs, cfg, out);
-        }
-        // inject on any event that isn't related to fd or timer
-        // this delays injection for linker init
-        // not used when --bp is used
-        else
-        {
-            auto proc_dir = KittyUtils::String::fmt("/proc/%d", pid);
-            bool proc_dir_watch = Utils::inotify_watch_directory(inotifyFd,
-                                                                 proc_dir,
-                                                                 IN_ALL_EVENTS,
-                                                                 [&](int, struct inotify_event *iev) -> bool {
-                                                                     // skip fd event
-                                                                     if (iev->len >= 2 &&
-                                                                         *(uint16_t *)iev->name == 0x6466)
-                                                                         return false;
-
-                                                                     // skip timerslack event
-                                                                     if (iev->len >= 4 &&
-                                                                         *(uint32_t *)iev->name == 0x656d6974)
-                                                                         return false;
-
-                                                                     if (cfg.delay > 0)
-                                                                         SLEEP_MICROS(cfg.delay);
-
-                                                                     result = inject(pid, libs, cfg, out);
-
-                                                                     return true;
-                                                                 });
-
-            if (!proc_dir_watch)
+    Utils::am_process_start_callback(
+        // init callback
+        [&cfg] {
+            if (cfg.launch)
             {
-                if (inotifyFd > -1)
-                    close(inotifyFd);
-                
-                KITTY_LOGE("Failed to add watch on process directory. last error = %s.", strerror(errno));
-                exit(1);
+                std::thread([&cfg]() -> void {
+                    // give some time
+                    SLEEP_SECONDS(1);
+                    if (!Utils::android_launch_app(cfg.package))
+                    {
+                        KITTY_LOGE("Failed to launch app %s!", cfg.package.c_str());
+                        exit(1);
+                    }
+                }).detach();
             }
-        }
+        },
+        // process start callback
+        [&](const android_event_am_proc_start *event) -> bool {
+            if (int(cfg.package.length()) != event->process_name.length)
+                return false;
+            if (strncmp(event->process_name.data, cfg.package.c_str(), cfg.package.length()))
+                return false;
 
-        return true;
-    });
+            pid = event->pid.data;
+
+            if (cfg.bp)
+            {
+                if (cfg.delay > 0)
+                    SLEEP_MICROS(cfg.delay);
+
+                result = inject(pid, libs, cfg, out);
+            }
+            // inject on any event that isn't related to fd or timer
+            // this delays injection for linker init
+            // not used when --bp is used
+            else
+            {
+                auto proc_dir = KittyUtils::String::fmt("/proc/%d", pid);
+                bool proc_dir_watch = Utils::inotify_watch_directory(inotifyFd,
+                                                                     proc_dir,
+                                                                     IN_ALL_EVENTS,
+                                                                     [&](int, struct inotify_event *iev) -> bool {
+                                                                         // skip fd event
+                                                                         if (iev->len >= 2 &&
+                                                                             *(uint16_t *)iev->name == 0x6466)
+                                                                             return false;
+
+                                                                         // skip timerslack event
+                                                                         if (iev->len >= 4 &&
+                                                                             *(uint32_t *)iev->name == 0x656d6974)
+                                                                             return false;
+
+                                                                         if (cfg.delay > 0)
+                                                                             SLEEP_MICROS(cfg.delay);
+
+                                                                         result = inject(pid, libs, cfg, out);
+
+                                                                         return true;
+                                                                     });
+
+                if (!proc_dir_watch)
+                {
+                    if (inotifyFd > -1)
+                        close(inotifyFd);
+
+                    KITTY_LOGE("Failed to add watch on process directory. last error = %s.", strerror(errno));
+                    exit(1);
+                }
+            }
+
+            return true;
+        });
 
     if (inotifyFd > -1)
         close(inotifyFd);

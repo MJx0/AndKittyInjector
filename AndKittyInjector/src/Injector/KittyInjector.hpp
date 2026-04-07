@@ -55,13 +55,13 @@ struct inject_elf_info_t
 
 struct inject_elf_config_t
 {
-    int sdk, rtdl_flags, delay;
+    int sdk, rtdl_flags, delay, timeout;
     bool watch, launch, seize, bp, memfd, free, hide;
     std::string package;
     std::function<void(inject_elf_info_t &injected)> beforeEntryPoint, afterEntryPoint;
 
     inject_elf_config_t()
-        : sdk(0), rtdl_flags(RTLD_LOCAL | RTLD_NOW), delay(0), watch(false), launch(false), seize(false), bp(false),
+        : sdk(0), rtdl_flags(RTLD_LOCAL | RTLD_NOW), delay(0), timeout(0), watch(false), launch(false), seize(false), bp(false),
           memfd(false), free(false), hide(false), beforeEntryPoint(nullptr), afterEntryPoint(nullptr)
     {
     }
@@ -123,6 +123,4 @@ private:
 
     // preinit callbacks
     bool findNbCallbacks(nbItf_data_t *out);
-
-    std::vector<uintptr_t> findNbSoInfoRefs(const kitty_soinfo_t &soinfo);
 };

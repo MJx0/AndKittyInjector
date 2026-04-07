@@ -19,13 +19,14 @@ Inject from /data for Android
 - [x] Inject & Unload lib after entry point execution
 - [x] Hide lib segments from /maps
 - [x] Hide lib from native or emu linker solist ( dladdr & dl_iterate_phdr )
+- [x] Randomize ELF header
 
 <h2> How to use: </h2>
 
 Make sure to chmod +x or 755
 
 ```text
-Usage: AndKittyInjector [--help] [--version] --package <name> --libs <paths>... [--launch] [--watch] [--bp] [--delay <micros>] [--memfd] [--free] [--hide]
+Usage: AndKittyInjector [--help] [--version] --package <name> --libs <paths>... [--launch] [--watch] [--bp] [--delay <micros>] [--timeout <ms>] [--memfd] [--free] [--hide]
 
 Optional arguments:
   -h, --help        shows help message and exits 
@@ -34,11 +35,12 @@ Optional arguments:
   --libs            Libraries path to be injected. [nargs: 1 or more] [required]
   --launch          Launch process and inject. 
   --watch           Monitor process start then inject. 
-  --bp              Inject after breakpoint hit. 
+  --bp              Inject after native/emulated dlopen breakpoint hit. 
   --delay <micros>  Delay injection in microseconds. 
+  --timeout <ms>    Timeout for ptrace remote calls in milliseconds. 
   --memfd           Use memfd dlopen. 
   --free            Unload library after entry point execution. 
-  --hide            Remove soinfo and remap library to anonymouse memory. 
+  --hide            Remove soinfo from solist/sonext, remap library to anonymouse memory and randomize ELF header. 
 ```
 
 Example:

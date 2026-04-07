@@ -25,9 +25,6 @@ namespace Utils
 
         usleep(500000); // 500 ms
 
-        cmd = "pkill -f" + pkg + " > /dev/null 2>&1";
-        system(cmd.c_str());
-
         return true;
     }
 
@@ -77,7 +74,7 @@ namespace Utils
     }
 
     // https://gist.github.com/vvb2060/a3d40084cd9273b65a15f8a351b4eb0e#file-am_proc_start-cpp
-    bool am_process_start(std::function<bool(const android_event_am_proc_start *)> cb)
+    bool am_process_start_callback(std::function<void()> init_cb, std::function<bool(const android_event_am_proc_start *)> cb)
     {
         char log_tag[0xff] = {0};
         int log_tag_get = __system_property_get("persist.log.tag", log_tag);
@@ -117,6 +114,9 @@ namespace Utils
 
             if (first)
             {
+                if (init_cb)
+                    init_cb();
+                
                 first = false;
                 continue;
             }

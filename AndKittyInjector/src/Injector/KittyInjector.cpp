@@ -2,14 +2,7 @@
 #include <thread>
 
 #define kUSE_STACK_BUFFER 1
-
-#if kUSE_STACK_BUFFER
-#define kREMOTE_BUFF_SIZE (19 * 8)
-#else
 #define kREMOTE_BUFF_SIZE (KT_PAGE_SIZE)
-#endif
-
-#define kGET_ALIGIN_UP(p) ((uintptr_t(p) + sizeof(uintptr_t)) & ~(sizeof(uintptr_t) - 1))
 
 std::string EMachineToStr(int16_t em)
 {
@@ -40,8 +33,9 @@ bool KittyInjector::init(KittyMemoryMgr *kmgr, const inject_elf_config_t &cfg)
     _kMgr = kmgr;
     _kMgr->trace.setAutoRestoreRegs(true);
     _kMgr->trace.setDefaultCaller(0);
+    _kMgr->trace.setRemoteCallTimeout(_cfg.timeout);
 
-    int sdk = KittyUtils::getAndroidSDK();
+    int sdk = KittyUtils::Android::getSDK();
     if (!(sdk > 0 && sdk < 24))
     {
         std::vector<std::string> caller_libs = {"/libRS.so", "/libc.so"};
@@ -204,22 +198,40 @@ bool KittyInjector::waitBreakpoint(bool needsNB)
     KITTY_LOGI("Injector: Creating breakpoint at %p...", (void *)bp_addr);
 
     auto bp_ok = [&](user_regs_struct *regs) -> bool {
-        uintptr_t arg0 = _kMgr->trace.getArgFromRegs<uintptr_t>(regs, 0);
-        uintptr_t arg1 = _kMgr->trace.getArgFromRegs<uintptr_t>(regs, 1);
+        if (!needsNB)
+        {
+            uintptr_t arg0 = _kMgr->trace.getArgFromRegs<uintptr_t>(regs, 0);
+            uintptr_t arg1 = _kMgr->trace.getArgFromRegs<uintptr_t>(regs, 1);
 
-        std::string filePath = _kMgr->readMemStr(arg0, 0xff);
-        int flags = arg1;
+            std::string filePath = _kMgr->readMemStr(arg0, 0xff);
+            int flags = arg1;
 
-        KITTY_LOGI("bp]: dlopen(%s, %d)", filePath.c_str(), flags);
+            KITTY_LOGI("bp]: dlopen(%s, %d)", filePath.c_str(), flags);
 
-        std::string pc_map = KittyMemoryEx::getAddressMap(_kMgr->processID(), regs->KT_REG_PC).toString();
-        KITTY_LOGI("bp]: PC(%p) -> %s", (void *)regs->KT_REG_PC, pc_map.c_str());
+            std::string pc_map = KittyMemoryEx::getAddressMap(_kMgr->processID(), regs->KT_REG_PC).toString();
+            KITTY_LOGI("bp]: PC(%p) -> %s", (void *)regs->KT_REG_PC, pc_map.c_str());
 
-        uintptr_t ret_addr = _kMgr->trace.getReturnAddressFromRegs(regs);
-        std::string ret_map = KittyMemoryEx::getAddressMap(_kMgr->processID(), ret_addr).toString();
-        KITTY_LOGI("bp]: Return Address (%p) -> %s", (void *)ret_addr, ret_map.c_str());
+            uintptr_t ret_addr = _kMgr->trace.getReturnAddressFromRegs(regs);
+            std::string ret_map = KittyMemoryEx::getAddressMap(_kMgr->processID(), ret_addr).toString();
+            KITTY_LOGI("bp]: Return Address (%p) -> %s", (void *)ret_addr, ret_map.c_str());
 
-        return !KittyUtils::String::contains(filePath, "nativebridge");
+            // stay away from libnativebridge.so in native injection
+            return (!KittyUtils::String::contains(ret_map, "libnativebridge.so") &&
+                    !KittyUtils::String::contains(filePath, "libnativebridge.so"));
+        }
+
+        return true;
+
+        /*_kMgr->nbScanner.init();
+        uintptr_t cmp = uintptr_t(_kMgr->nbScanner.fnNativeBridgeInitialized);
+        uint32_t disp = 0;
+        _kMgr->readMem(cmp + 2, &disp, sizeof(disp));
+        uintptr_t nb_state_ptr = cmp + 7 + disp;
+        KITTY_LOGI("nb_state_ptr: %p", _kMgr->nbScanner.fnNativeBridgeInitialized);
+
+        int nb_state = 0;
+        _kMgr->readMem(nb_state_ptr, &nb_state, sizeof(nb_state));
+        return nb_state == 3;*/
     };
 
 #if 0
@@ -312,7 +324,7 @@ inject_elf_info_t KittyInjector::inject(const std::string &elfPath)
             _kMgr->writeMem(_rbuffer, _backup_rbuffer.data(), _backup_rbuffer.size());
         }
 #else
-        _rsyscall.rmunmap(_rbuffer, kREMOTE_BUFF_SIZE);
+        _rsyscall.rmunmap(_rbuffer, _rbuffer.size());
 #endif
 
         if (!_kMgr->trace.setRegs(&backup_regs))
@@ -427,9 +439,15 @@ inject_elf_info_t KittyInjector::inject(const std::string &elfPath)
         {
             KITTY_LOGI("Injector: Unloading library...");
             if (unloadLibrary(injected))
+            {
                 KITTY_LOGI("Injector: Library unloaded successfully.");
+            }
             else
-                KITTY_LOGW("Injector: Failed to unload library!");
+            {
+                KITTY_LOGE("Injector: Failed to unload library!");
+                cleanUp();
+                return {};
+            }
         }
     }
     else if (bCalldlerror)
@@ -458,15 +476,15 @@ inject_elf_info_t KittyInjector::inject(const std::string &elfPath)
                     KITTY_LOGE("Injector: %s", error_str.c_str());
 
                     if (_cfg.memfd && KittyUtils::String::contains(error_str, "library", false) &&
-                        KittyUtils::String::endsWith(error_str, "not found", false))
+                        KittyUtils::String::contains(error_str, "not found", false))
                     {
-                        KITTY_LOGI("Injector: memfd dlopen might not be supported.");
+                        KITTY_LOGE("Injector: memfd dlopen might not be supported.");
                     }
 
                     else if (!_cfg.memfd && KittyUtils::String::contains(error_str, "couldn't map", false) &&
-                             KittyUtils::String::endsWith(error_str, "Permission denied", false))
+                             KittyUtils::String::contains(error_str, "Permission denied", false))
                     {
-                        KITTY_LOGI("Injector: Maybe use memfd or disable SELinux.");
+                        KITTY_LOGE("Injector: Maybe use memfd or disable SELinux.");
                     }
                 }
                 else
@@ -531,7 +549,7 @@ inject_elf_info_t KittyInjector::nativeInject(KittyIOFile &elfFile, bool *bCalld
     };
 
     auto do_memfd_dlopen = [&]() -> void {
-        std::string memfd_rand = KittyUtils::String::random(KittyUtils::randInt(5, 12));
+        std::string memfd_rand = KittyUtils::randomString(KittyUtils::randInt(5, 12));
         KITTY_LOGI("nativeInject: memfd Name (\"%s\").", memfd_rand.c_str());
 
         if (!_kMgr->writeMemStr(_rbuffer, memfd_rand))
@@ -565,7 +583,7 @@ inject_elf_info_t KittyInjector::nativeInject(KittyIOFile &elfFile, bool *bCalld
         extinfo.flags = ANDROID_DLEXT_USE_LIBRARY_FD;
         extinfo.library_fd = rmemfd;
 
-        uintptr_t rdlextinfo = kGET_ALIGIN_UP(_rbuffer + memfd_rand.size() + 1);
+        uintptr_t rdlextinfo = KT_ALIGN_UP(_rbuffer + memfd_rand.size() + 1, sizeof(uintptr_t));
         if (!_kMgr->writeMem(rdlextinfo, &extinfo, sizeof(extinfo)))
         {
             KITTY_LOGE("nativeInject: Failed to write dlextinfo into stack!");
@@ -657,22 +675,6 @@ inject_elf_info_t KittyInjector::emuInject(KittyIOFile &elfFile, bool *bCalldler
             uintptr_t ns = 0;
             if (nb.isHoudini())
             {
-                // houdini version 3 or above will need to check which namespace
-                // will work between 1 to 25. if (ns && ns <= 25)
-                // return (char *)&unk_64DF10 + 0xC670 * ns + qword_80C6C8;
-
-                /*
-                Logged from houdini v6
-                I: [1]: default
-                I: [2]: com_android_art
-                I: [3]: com_android_neuralnetworks
-                I: [4]: com_android_i18n
-                I: [5]: classloader-namespace (usually game libs loaded here)
-                I: [6]: classloader-namespace-shared
-                ...
-                */
-
-                // on nb versions < 5, hardcoded classloader-namespace id (3)
                 ns = 3;
                 if (nbData.version >= KT_NB_RUNTIME_NAMESPACE_VERSION)
                 {
@@ -771,7 +773,7 @@ inject_elf_info_t KittyInjector::emuInject(KittyIOFile &elfFile, bool *bCalldler
     };
 
     auto do_memfd_dlopen = [&]() -> void {
-        std::string memfd_rand = KittyUtils::String::random(KittyUtils::randInt(5, 12));
+        std::string memfd_rand = KittyUtils::randomString(KittyUtils::randInt(5, 12));
         KITTY_LOGI("emuInject: memfd Name (\"%s\").", memfd_rand.c_str());
 
         if (!_kMgr->writeMemStr(_rbuffer, memfd_rand))
@@ -901,7 +903,7 @@ bool KittyInjector::hideLibrary(inject_elf_info_t &injected)
 
     if (injected.is_native)
     {
-        KITTY_LOGI("Injector: Removing soinfo %p...", (void *)(injected.soinfo.ptr));
+        KITTY_LOGI("hideLibrary: Removing soinfo %p...", (void *)(injected.soinfo.ptr));
 
         // uintptr_t removesoinfo = _kMgr->linkerScanner.findDebugSymbol("_dl__Z20solist_remove_soinfoP6soinfo");
         // _kMgr->trace.callFunction(removesoinfo, injected.soinfo.ptr);
@@ -940,48 +942,63 @@ bool KittyInjector::hideLibrary(inject_elf_info_t &injected)
                  .createWithBytes(prev.ptr + si_next_offset, &injected.soinfo.next, sizeof(injected.soinfo.next))
                  .Modify())
         {
-            KITTY_LOGE("SoInfoPatch: Failed to patch emulated prev soinfo next!");
+            KITTY_LOGE("hideLibrary: Failed to patch emulated prev soinfo next!");
             return false;
         }
 
-        if (_kMgr->linkerScanner.sonext() == injected.soinfo.ptr &&
-            !_kMgr->memPatch.createWithBytes(_kMgr->linkerScanner.linker_offsets().sonext, &prev.ptr, sizeof(prev.ptr))
-                 .Modify())
+        KITTY_LOGI("hideLibrary: Successfully Removed soinfo %p from solist.", (void *)(injected.soinfo.ptr));
+
+        if (_kMgr->linkerScanner.sonext() == injected.soinfo.ptr)
         {
-            KITTY_LOGE("SoInfoPatch: Failed to patch linker sonext!");
-            return false;
-        }
+            if (!_kMgr->memPatch
+                     .createWithBytes(_kMgr->linkerScanner.linker_offsets().sonext, &prev.ptr, sizeof(prev.ptr))
+                     .Modify())
+            {
+                KITTY_LOGE("hideLibrary: Failed to patch linker sonext!");
+                return false;
+            }
 
-        KITTY_LOGI("Injector: Successfully Removed soinfo %p.", (void *)(injected.soinfo.ptr));
+            KITTY_LOGI("hideLibrary: Successfully Removed soinfo %p from sonext.", (void *)(injected.soinfo.ptr));
+        }
     }
     else
     {
-        KITTY_LOGI("Injector: Removing emulated soinfo %p...", (void *)(injected.soinfo.ptr));
+        KITTY_LOGI("hideLibrary: Removing emulated soinfo %p...", (void *)(injected.soinfo.ptr));
 
-        auto solist = _kMgr->nbScanner.allSoInfo();
+        // emulated linker for google emulators
+#ifdef __LP64__
+        LinkerScannerMgr emulinker = LinkerScannerMgr(_kMgr->memOp(),
+                                                      _kMgr->elfScanner.findElf("/linker64",
+                                                                                EScanElfType::Emulated,
+                                                                                EScanElfFilter::System));
+#else
+        LinkerScannerMgr emulinker = LinkerScannerMgr(_kMgr->memOp(),
+                                                      _kMgr->elfScanner.findElf("/linker",
+                                                                                EScanElfType::Emulated,
+                                                                                EScanElfFilter::System));
+#endif
+
+        auto solist = (!_kMgr->nbScanner.isHoudini() && emulinker.init()) ? emulinker.allSoInfo()
+                                                                          : _kMgr->nbScanner.allSoInfo();
         if (solist.empty())
         {
             KITTY_LOGE("hideLibrary: Emulated solist is empty!");
             return false;
         }
 
-        uintptr_t soinfo_replace_ptr = 0;
-        if (solist[0].ptr == injected.soinfo.ptr)
-        {
-            soinfo_replace_ptr = injected.soinfo.next;
-        }
-        else
+        kitty_soinfo_t prev = {};
+        if (solist[0].ptr != injected.soinfo.ptr)
         {
             for (auto &it : solist)
             {
                 if (it.next == injected.soinfo.ptr)
                 {
-                    soinfo_replace_ptr = it.ptr;
+                    prev = it;
                     break;
                 }
             }
 
-            if (!soinfo_replace_ptr)
+            if (!prev.ptr)
             {
                 KITTY_LOGE("hideLibrary: Failed to find emulated prev soinfo!");
                 return false;
@@ -995,36 +1012,106 @@ bool KittyInjector::hideLibrary(inject_elf_info_t &injected)
             }
 
             if (!_kMgr->memPatch
-                     .createWithBytes(soinfo_replace_ptr + si_next_offset,
-                                      &injected.soinfo.next,
-                                      sizeof(injected.soinfo.next))
+                     .createWithBytes(prev.ptr + si_next_offset, &injected.soinfo.next, sizeof(injected.soinfo.next))
                      .Modify())
             {
-                KITTY_LOGE("SoInfoPatch: Failed to patch emulated prev soinfo next!");
+                KITTY_LOGE("hideLibrary: Failed to patch emulated prev soinfo next!");
                 return false;
             }
+
+            KITTY_LOGI("hideLibrary: Successfully Removed soinfo %p from emulated solist.",
+                       (void *)(injected.soinfo.ptr));
         }
 
-        auto sonext_refs = findNbSoInfoRefs(injected.soinfo);
-        if (sonext_refs.empty())
+        if (!_kMgr->nbScanner.isHoudini() && emulinker.init())
         {
-            KITTY_LOGE("SoInfoPatch: Failed to find emulated sonext refs!");
-            return false;
-        }
-
-        for (auto &ref : sonext_refs)
-        {
-            if (!_kMgr->memPatch.createWithBytes(ref, &soinfo_replace_ptr, sizeof(soinfo_replace_ptr)).Modify())
+            if (emulinker.sonext() == injected.soinfo.ptr)
             {
-                KITTY_LOGE("SoInfoPatch: Failed to patch emulated sonext!");
-                return false;
+                if (!_kMgr->memPatch.createWithBytes(emulinker.linker_offsets().sonext, &prev.ptr, sizeof(prev.ptr))
+                         .Modify())
+                {
+                    KITTY_LOGE("hideLibrary: Failed to patch linker sonext!");
+                    return false;
+                }
+
+                KITTY_LOGI("hideLibrary: Successfully Removed soinfo %p from sonext.", (void *)(injected.soinfo.ptr));
             }
         }
+        else
+        {
+            // Houdini find sonext refs in .bss
+            std::vector<uintptr_t> sonext_refs;
+            for (auto &it : _kMgr->nbScanner.nbImplElf().segments())
+            {
+                if (it.is_rw)
+                {
+                    sonext_refs = _kMgr->memScanner.findDataAll(it.startAddress,
+                                                                it.endAddress,
+                                                                &injected.soinfo.ptr,
+                                                                sizeof(injected.soinfo.ptr));
+                    if (sonext_refs.size() > 0)
+                    {
+                        // KITTY_LOGI("found (%d) refs at %s", int(sonext_refs.size()), it.toString().c_str());
+                        break;
+                    }
+                }
+            }
 
-        KITTY_LOGI("Injector: Successfully Removed emulated soinfo %p.", (void *)(injected.soinfo.ptr));
+            if (sonext_refs.empty())
+            {
+                auto maps = KittyMemoryEx::getAllMaps(_kMgr->processID());
+                for (auto &it : maps)
+                {
+                    if (!it.readable || it.executable || !it.is_private)
+                        continue;
+
+                    bool check1 = (KittyUtils::String::startsWith(it.pathname, "[anon:Mem_"));
+                    bool check2 = (it.pathname == "[anon:linker_alloc]");
+                    if (!check1 && !check2)
+                        continue;
+
+                    auto results = _kMgr->memScanner.findDataAll(it.startAddress,
+                                                                 it.endAddress,
+                                                                 &injected.soinfo.ptr,
+                                                                 sizeof(injected.soinfo.ptr));
+                    if (results.size() > 0 && results.size() <= 5)
+                    {
+                        // KITTY_LOGI("found (%d) refs at %s", int(results.size()), it.toString().c_str());
+                        sonext_refs.insert(sonext_refs.end(), results.begin(), results.end());
+                    }
+                }
+            }
+
+            if (sonext_refs.empty() && solist.back().ptr == injected.soinfo.ptr)
+            {
+                KITTY_LOGE("hideLibrary: Failed to find emulated sonext refs!");
+                return false;
+            }
+
+            if (solist.back().ptr == injected.soinfo.ptr)
+            {
+                KITTY_LOGI("hideLibrary: Injected soinfo is sonext!");
+            }
+
+            uintptr_t soinfo_replace_ptr = solist[0].ptr != injected.soinfo.ptr ? prev.ptr : injected.soinfo.next;
+            for (auto &ref : sonext_refs)
+            {
+                if (!_kMgr->memPatch.createWithBytes(ref, &soinfo_replace_ptr, sizeof(soinfo_replace_ptr)).Modify())
+                {
+                    KITTY_LOGE("hideLibrary: Failed to patch emulated sonext!");
+                    return false;
+                }
+
+                KITTY_LOGI("hideLibrary: Successfully Removed soinfo %p from reference at %p.",
+                           (void *)(injected.soinfo.ptr),
+                           (void *)ref);
+            }
+        }
     }
 
-    KITTY_LOGI("Injector: Remapping segments %p - %p...", (void *)(injected.elf.base()), (void *)(injected.elf.end()));
+    KITTY_LOGI("hideLibrary: Remapping segments %p - %p...",
+               (void *)(injected.elf.base()),
+               (void *)(injected.elf.end()));
 
     if (injected.elf.segments().empty())
     {
@@ -1066,9 +1153,16 @@ bool KittyInjector::hideLibrary(inject_elf_info_t &injected)
         backup.Restore();
     }
 
-    KITTY_LOGI("Injector: Successfully remapped segments %p - %p.",
+    KITTY_LOGI("hideLibrary: Successfully remapped segments %p - %p.",
                (void *)(injected.elf.base()),
                (void *)(injected.elf.end()));
+
+    // randomize header
+    std::vector<uint8_t> buffer = KittyUtils::randomBytes(sizeof(KT_ElfW(Ehdr)));
+    if (_kMgr->memPatch.createWithBytes(injected.elf.base(), buffer.data(), buffer.size()).Modify())
+    {
+        KITTY_LOGI("hideLibrary: Successfully randomized ELF header at %p.", (void *)(injected.elf.base()));
+    }
 
     return true;
 }
@@ -1230,56 +1324,6 @@ bool KittyInjector::findNbCallbacks(nbItf_data_t *out)
     return true;
 
 #endif
-}
-
-std::vector<uintptr_t> KittyInjector::findNbSoInfoRefs(const kitty_soinfo_t &soinfo)
-{
-    auto maps = KittyMemoryEx::getAllMaps(_kMgr->processID());
-
-    auto si_map = KittyMemoryEx::getAddressMap(_kMgr->processID(), soinfo.ptr, maps);
-    if (si_map.pathname == "[anon:linker_alloc]")
-    {
-        auto results = _kMgr->memScanner.findDataAll(si_map.startAddress,
-                                                     si_map.endAddress,
-                                                     &soinfo.ptr,
-                                                     sizeof(soinfo.ptr));
-        if (results.size() > 0)
-        {
-            return results;
-        }
-    }
-
-    for (auto &it : _kMgr->nbScanner.nbImplElf().segments())
-    {
-        if (it.is_rw)
-        {
-            auto results = _kMgr->memScanner.findDataAll(it.startAddress,
-                                                         it.endAddress,
-                                                         &soinfo.ptr,
-                                                         sizeof(soinfo.ptr));
-            if (results.size() > 0)
-            {
-                return results;
-            }
-        }
-    }
-
-    for (auto &it : maps)
-    {
-        bool check1 = (it.readable && KittyUtils::String::startsWith(it.pathname, "[anon:Mem_"));
-        bool check2 = (it.readable && it.pathname == "[anon:linker_alloc]");
-        if (!check1 && !check2)
-            continue;
-
-        auto results = _kMgr->memScanner.findDataAll(it.startAddress, it.endAddress, &soinfo.ptr, sizeof(soinfo.ptr));
-        if (results.size() > 0)
-        {
-            if (results.size() > 0)
-                return results;
-        }
-    }
-
-    return {};
 }
 
 /*
