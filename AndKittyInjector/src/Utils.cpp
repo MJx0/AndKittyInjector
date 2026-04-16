@@ -1,18 +1,98 @@
 #include "Utils.hpp"
 #include <KittyUtils.hpp>
 
+static std::string _execCmd(const std::string &cmd)
+{
+    std::array<char, 256> buffer;
+    std::string result;
+
+    FILE *pipe = popen(cmd.c_str(), "r");
+    if (!pipe)
+        return "";
+
+    while (fgets(buffer.data(), buffer.size(), pipe))
+    {
+        result += buffer.data();
+    }
+
+    pclose(pipe);
+
+    if (!result.empty() && result.back() == '\n')
+        result.pop_back();
+
+    return result;
+}
+
+static bool _isValidActivity(const std::string &pkg, const std::string &act)
+{
+    if (act.empty())
+        return false;
+
+    size_t slash = act.find('/');
+    if (slash == std::string::npos)
+        return false;
+    if (act.find('/', slash + 1) != std::string::npos)
+        return false;
+
+    if (act.rfind(pkg + "/", 0) != 0)
+        return false;
+
+    std::string cls = act.substr(slash + 1);
+    if (cls.empty())
+        return false;
+
+    bool has_dot = false;
+
+    for (char c : act)
+    {
+        if (c == ' ' || c == '\t' || c == '\n')
+            return false;
+        if (c == '.')
+            has_dot = true;
+        if (!(isalnum((unsigned char)c) || c == '.' || c == '/' || c == '$'))
+            return false;
+    }
+
+    return has_dot;
+}
+
+static std::string _resolveActivity(const std::string &pkg)
+{
+    std::string act = _execCmd("cmd package resolve-activity --brief " + pkg + " 2>/dev/null | tail -n 1");
+    if (_isValidActivity(pkg, act))
+        return act;
+
+    // fallback dumpsys
+    act = _execCmd("dumpsys package " + pkg + " | grep -A 2 'android.intent.action.MAIN' | grep -o '" + pkg +
+                   "/[^ ]*' | head -n 1");
+    if (_isValidActivity(pkg, act))
+        return act;
+
+    return "";
+}
+
 namespace Utils
 {
     bool android_launch_app(const std::string &pkg)
     {
-        std::string cmd;
+        std::string activity = _resolveActivity(pkg);
+        if (!activity.empty())
+        {
+            KittyUtils::String::trim(activity);
 
-        cmd = "monkey -p " + pkg + " -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1";
-        if (system(cmd.c_str()) == 0)
-            return true;
+            std::string result = _execCmd("am start -n " + activity + " 2>&1");
+            if (!KittyUtils::String::contains(result, "Error:", false) &&
+                !KittyUtils::String::contains(result, "does not exist", false) &&
+                !KittyUtils::String::contains(result, "Exception occurred", false) &&
+                !KittyUtils::String::contains(result, "Bad component name", false))
+            {
+                return true;
+            }
+        }
 
-        cmd = "am start $(cmd package resolve-activity --brief " + pkg + " | tail -n 1) > /dev/null 2>&1";
-        if (system(cmd.c_str()) == 0)
+        // fallback monkey
+        std::string monkeyCmd = "monkey -p " + pkg + " --pct-syskeys 0 --pct-anyevent 0 --pct-rotation 0 1 > /dev/null 2>&1";
+        if (system(monkeyCmd.c_str()) == 0)
             return true;
 
         return false;
@@ -74,7 +154,8 @@ namespace Utils
     }
 
     // https://gist.github.com/vvb2060/a3d40084cd9273b65a15f8a351b4eb0e#file-am_proc_start-cpp
-    bool am_process_start_callback(std::function<void()> init_cb, std::function<bool(const android_event_am_proc_start *)> cb)
+    bool am_process_start_callback(std::function<void()> init_cb,
+                                   std::function<bool(const android_event_am_proc_start *)> cb)
     {
         char log_tag[0xff] = {0};
         int log_tag_get = __system_property_get("persist.log.tag", log_tag);
@@ -116,7 +197,7 @@ namespace Utils
             {
                 if (init_cb)
                     init_cb();
-                
+
                 first = false;
                 continue;
             }

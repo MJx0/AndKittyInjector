@@ -4,6 +4,11 @@
 #include <string>
 #include <unistd.h>
 #include <functional>
+#include <array>
+#include <memory>
+#include <cstdio>
+#include <thread>
+#include <chrono>
 
 #include <sys/system_properties.h>
 #include <sys/inotify.h>
