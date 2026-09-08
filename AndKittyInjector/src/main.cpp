@@ -32,7 +32,7 @@
     }
 
 #define kPROGRAM_NAME "AndKittyInjector"
-#define kPROGRAM_VER "5.3.0"
+#define kPROGRAM_VER "5.3.1"
 
 bool inject(int pid,
             const std::vector<std::string> &libs,
