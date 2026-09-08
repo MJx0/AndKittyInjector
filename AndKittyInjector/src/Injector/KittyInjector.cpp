@@ -467,8 +467,7 @@ inject_elf_info_t KittyInjector::inject(const std::string &elfPath)
         {
             if (!injected.pJNI_OnLoad)
                 KITTY_LOGW("Injector: Couldn't find JNI_OnLoad symbol.");
-
-            if (!injected.pJvm)
+            else if (!injected.pJvm)
                 KITTY_LOGW("Injector: Couldn't find JavaVM.");
 
             KITTY_LOGW("Injector: Skipping EntryPoint");
