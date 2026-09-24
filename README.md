@@ -27,7 +27,8 @@ Make sure to `chmod +x` or `755` the pushed binary.
 ```text
 Usage: AndKittyInjector [--help] [--version] (--pid <id> | --package <name>) --libs <paths>...
                          [--launch | --watch] [--bp-ld | --bp-sym <binary> <symbol>]
-                         [--delay <micros>] [--timeout <ms>] [--memfd] [--free] [--hide]
+                         [--delay <micros>] [--timeout <ms>] [--memfd] [--memfd-name <name>]
+                         [--free] [--hide]
 
 Optional arguments:
   -h, --help              shows help message and exits
@@ -45,6 +46,7 @@ Optional arguments:
   --delay <micros>        Delay injection by this many microseconds.
   --timeout <ms>          Timeout for ptrace remote calls, in milliseconds.
   --memfd                 Use memfd-backed dlopen (Bypasses SELinux path restrictions).
+  --memfd-name <name>     Custom name for the memfd instead of a random one. Requires --memfd.
   --free                  Unload the library after its entry point returns.
   --hide                  Remove the lib's soinfo from solist/sonext, remap its segments to
                            anonymous memory, and randomize its ELF header.
@@ -58,26 +60,17 @@ One of `--pid` or `--package` is required. `--libs` accepts one or more paths an
 # Inject into an already-running process by PID.
 ./AndKittyInjector --pid 12345 --libs /data/local/tmp/libtest.so
 
-# Inject into an already-running process by package name.
-./AndKittyInjector --package com.target.package --libs /data/local/tmp/libtest.so
-
 # Launch the app, then inject two libs, using memfd dlopen, with a 1s delay and 3s remote-call timeout.
-./AndKittyInjector --package com.target.package \
-    --libs /data/local/tmp/lib1.so /data/local/tmp/lib2.so \
-    --launch --memfd --delay 1000000 --timeout 3000
+./AndKittyInjector --package com.target.package --launch --memfd --delay 1000000 --timeout 3000 --libs /data/local/tmp/lib1.so /data/local/tmp/lib2.so
 
-# Wait for the app to be launched (by the user or the system) and inject as soon as it appears.
-./AndKittyInjector --package com.target.package --libs /data/local/tmp/libtest.so --watch
+# Wait for the app to be launched (by the user or the system) and inject as soon as it appears using memfd dlopen.
+./AndKittyInjector --package com.target.package --watch --memfd --libs /data/local/tmp/libtest.so
 
 # Inject as soon as the first native/emulated dlopen call happens after launch.
-./AndKittyInjector --package com.target.package --libs /data/local/tmp/libtest.so --launch --bp-ld
+./AndKittyInjector --package com.target.package --launch --memfd --bp-ld --libs /data/local/tmp/libtest.so
 
 # Inject on a breakpoint at a specific symbol in a specific binary.
-./AndKittyInjector --package com.target.package --libs /data/local/tmp/libtest.so \
-    --launch --bp-sym /libc.so malloc
-
-# Inject hidden (removed from /proc/pid/maps and the linker's solist), unload after JNI_OnLoad runs.
-./AndKittyInjector --pid 12345 --libs /data/local/tmp/libtest.so --hide --free
+./AndKittyInjector --package com.target.package --launch --memfd --libs /data/local/tmp/libtest.so --bp-sym /libc.so malloc
 ```
 
 ## Embedding as a library
