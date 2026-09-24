@@ -154,7 +154,7 @@ public:
     inline bool rmemfd_seal(int rmemfd, unsigned long seals)
     {
         if (!_kMgr || !_kMgr->isMemValid())
-            return 0;
+            return false;
 
         auto ret = _kMgr->trace.callSyscall(syscall_fcntl_n, rmemfd, F_ADD_SEALS, seals);
         if (ret.result.val < 0)
@@ -180,7 +180,7 @@ public:
     inline bool rclose(int fd)
     {
         if (!_kMgr || !_kMgr->isMemValid())
-            return 0;
+            return false;
 
         auto ret = _kMgr->trace.callSyscall(syscall_close_n, fd);
         if (ret.result.val < 0)
