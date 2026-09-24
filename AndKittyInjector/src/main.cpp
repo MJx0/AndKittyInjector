@@ -32,7 +32,7 @@
     }
 
 #define kPROGRAM_NAME "AndKittyInjector"
-#define kPROGRAM_VER "5.3.1"
+#define kPROGRAM_VER "5.4.0"
 
 bool inject(int pid,
             const std::vector<std::string> &libs,
@@ -110,6 +110,17 @@ int main(int argc, char *args[])
 
     program.add_argument("--memfd").help("Use memfd dlopen.").store_into(inj_cfg.memfd);
 
+    program.add_argument("--memfd-name").help("Custom memfd name instead of random.").store_into(inj_cfg.memfd_name);
+
+    auto &free_hide_group = program.add_mutually_exclusive_group(false);
+    {
+        free_hide_group.add_argument("--free").help("Unload library after entry point execution.").store_into(inj_cfg.free);
+
+        free_hide_group.add_argument("--hide")
+            .help("Remove soinfo from solist/sonext, remap library to anonymouse memory and randomize ELF header.")
+            .store_into(inj_cfg.hide);
+    }
+
     program.add_argument("--free").help("Unload library after entry point execution.").store_into(inj_cfg.free);
 
     program.add_argument("--hide")
@@ -131,6 +142,12 @@ int main(int argc, char *args[])
             inj_cfg.package = KittyMemoryEx::getProcessName(target_pid);
         }
 
+        if (!inj_cfg.memfd && !inj_cfg.memfd_name.empty())
+        {
+            KITTY_LOGE("--memfd-name requires --memfd to be enabled!");
+            return 1;
+        }
+
         inj_cfg.bp |= (inj_cfg.bp_args.size() == 2);
     }
     catch (const std::exception &err)
@@ -141,31 +158,33 @@ int main(int argc, char *args[])
     }
 
     KITTY_LOGI("======== INJECTION ARGS ========");
-    if (target_pid != 0)
     {
-        KITTY_LOGI("process: %d", target_pid);
-    }
-    else
-    {
-        KITTY_LOGI("package: %s", inj_cfg.package.c_str());
-    }
-    KITTY_LOGI("sdk: %d", inj_cfg.sdk);
-    KITTY_LOGI("launch: %d", inj_cfg.launch ? 1 : 0);
-    KITTY_LOGI("watch: %d", inj_cfg.watch ? 1 : 0);
-    KITTY_LOGI("bp: %d", inj_cfg.bp);
-    if (!inj_cfg.bp_args.empty())
-    {
-        KITTY_LOGI("bp_binary: %s", inj_cfg.bp_args[0].c_str());
-        KITTY_LOGI("bp_symbol: %s", inj_cfg.bp_args[1].c_str());
-    }
-    KITTY_LOGI("delay: %dus", inj_cfg.delay);
-    KITTY_LOGI("timeout: %dms", inj_cfg.timeout);
-    KITTY_LOGI("memfd: %d", inj_cfg.memfd ? 1 : 0);
-    KITTY_LOGI("free: %d", inj_cfg.free);
-    KITTY_LOGI("hide: %d", inj_cfg.hide ? 1 : 0);
-    for (size_t i = 0; i < libs.size(); i++)
-    {
-        KITTY_LOGI("lib[%d]: %s", int(i + 1), libs[i].c_str());
+        if (target_pid != 0)
+        {
+            KITTY_LOGI("Process: %d", target_pid);
+        }
+        else
+        {
+            KITTY_LOGI("Package: %s", inj_cfg.package.c_str());
+        }
+        KITTY_LOGI("SDK: %d", inj_cfg.sdk);
+        KITTY_LOGI("Launch: %d", inj_cfg.launch ? 1 : 0);
+        KITTY_LOGI("Watch: %d", inj_cfg.watch ? 1 : 0);
+        KITTY_LOGI("Breakpoint: %d", inj_cfg.bp);
+        if (!inj_cfg.bp_args.empty())
+        {
+            KITTY_LOGI("Breakpoint-Binary: %s", inj_cfg.bp_args[0].c_str());
+            KITTY_LOGI("Breakpoint-Symbol: %s", inj_cfg.bp_args[1].c_str());
+        }
+        KITTY_LOGI("Delay: %dus", inj_cfg.delay);
+        KITTY_LOGI("Timeout: %dms", inj_cfg.timeout);
+        KITTY_LOGI("Memfd: %d", inj_cfg.memfd ? 1 : 0);
+        KITTY_LOGI("Free: %d", inj_cfg.free);
+        KITTY_LOGI("Hide: %d", inj_cfg.hide ? 1 : 0);
+        for (size_t i = 0; i < libs.size(); i++)
+        {
+            KITTY_LOGI("Library[%d]: %s", int(i + 1), libs[i].c_str());
+        }
     }
     KITTY_LOGI("================================");
 
@@ -218,20 +237,22 @@ int main(int argc, char *args[])
         int pid = KittyMemoryEx::getProcessID(inj_cfg.package);
         if (pid > 0)
         {
-            kill(pid, SIGKILL);
+            if (kill(pid, SIGKILL) != -1)
+            {
+                KITTY_LOGI("Killed target process.");
+            }
         }
-        KITTY_LOGI("Killed target process.");
         exit(1);
     }
 
     KITTY_LOGI("Injected %d %s successfully.",
                int(injected_libs_info.size()),
-               injected_libs_info.size() == 1 ? "lib" : "libs");
+               injected_libs_info.size() > 1 ? "libraries" : "library");
 
     KITTY_LOGI("Injection succeeded.");
 
     if (inj_ms.count() > 0)
-        KITTY_LOGI("Injection took %f MS.", inj_ms.count());
+        KITTY_LOGI("Injection took %.2f MS.", inj_ms.count());
 
     return 0;
 }
@@ -319,7 +340,7 @@ bool inject(int pid,
     {
         if (!injector.validateElf(it, nullptr, emulate ? nullptr : &emulate))
         {
-            KITTY_LOGI("Injector: Failed to validate %s!", it.c_str());
+            KITTY_LOGI("Failed to validate %s!", it.c_str());
             kmgr.trace.detach();
             return false;
         }
@@ -329,22 +350,22 @@ bool inject(int pid,
 
     if (cfg.bp)
     {
-        KITTY_LOGI("Injector: Setting up breakpoint...");
+        KITTY_LOGI("Setting up breakpoint...");
 
         if (!injector.waitBreakpoint(emulate))
         {
-            KITTY_LOGE("Injector: Failed to wait for breakpoint!");
+            KITTY_LOGE("Failed to wait for breakpoint!");
             kmgr.trace.detach();
             return false;
         }
 
-        KITTY_LOGI("Injector: Breakpoint triggered successfully.");
+        KITTY_LOGI("Breakpoint triggered successfully.");
     }
 
     std::string cmdline;
     std::string cmdlinePath = KittyUtils::String::fmt("/proc/%d/cmdline", pid);
     KittyIOFile::readFileToString(cmdlinePath, &cmdline);
-    KITTY_LOGI("Injector: Proccess current cmdline (\"%s\").", cmdline.c_str());
+    KITTY_LOGI("Proccess current cmdline (\"%s\").", cmdline.c_str());
 
     for (auto &it : libs)
     {
@@ -377,7 +398,7 @@ bool inject(int pid,
         return false;
     }
 
-    KITTY_LOGI("Dettached from target process successfully.");
+    KITTY_LOGI("Detached from target process successfully.");
 
     if (kill(pid, SIGCONT) == -1)
     {
@@ -435,7 +456,10 @@ bool inject_watch(const std::vector<std::string> &libs, inject_elf_config_t &cfg
             if (cfg.bp)
             {
                 if (cfg.delay > 0)
+                {
+                    KITTY_LOGI("Waiting for the delay...");
                     SLEEP_MICROS(cfg.delay);
+                }
 
                 result = inject(pid, libs, cfg, out);
             }
@@ -460,7 +484,10 @@ bool inject_watch(const std::vector<std::string> &libs, inject_elf_config_t &cfg
                                                                              return false;
 
                                                                          if (cfg.delay > 0)
+                                                                         {
+                                                                             KITTY_LOGI("Waiting for the delay...");
                                                                              SLEEP_MICROS(cfg.delay);
+                                                                         }
 
                                                                          result = inject(pid, libs, cfg, out);
 

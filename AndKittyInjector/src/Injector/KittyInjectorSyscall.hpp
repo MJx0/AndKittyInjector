@@ -10,6 +10,7 @@
 #define syscall_mmap_n 222
 #define syscall_munmap_n 215
 #define syscall_memfd_create_n 279
+#define syscall_close_n 57
 #elif __arm__
 #define syscall_getpid_n 20
 #define syscall_prctl_n 172
@@ -18,6 +19,7 @@
 #define syscall_mmap_n 192 // mmap2
 #define syscall_munmap_n 91
 #define syscall_memfd_create_n 385
+#define syscall_close_n 6
 #elif __i386__
 #define syscall_getpid_n 20
 #define syscall_prctl_n 172
@@ -26,6 +28,7 @@
 #define syscall_mmap_n 192 // mmap2
 #define syscall_munmap_n 91
 #define syscall_memfd_create_n 356
+#define syscall_close_n 6
 #elif __x86_64__
 #define syscall_getpid_n 39
 #define syscall_prctl_n 157
@@ -34,6 +37,7 @@
 #define syscall_mmap_n 9
 #define syscall_munmap_n 11
 #define syscall_memfd_create_n 319
+#define syscall_close_n 3
 #else
 #error "Unsupported ABI"
 #endif
@@ -171,6 +175,19 @@ public:
             _lastError = strerror(-ret.result.val);
         }
         return ret.result.val;
+    }
+
+    inline bool rclose(int fd)
+    {
+        if (!_kMgr || !_kMgr->isMemValid())
+            return 0;
+
+        auto ret = _kMgr->trace.callSyscall(syscall_close_n, fd);
+        if (ret.result.val < 0)
+        {
+            _lastError = strerror(-ret.result.val);
+        }
+        return ret.status == KT_RP_CALL_SUCCESS && ret.result.val == 0;
     }
 
     inline void clearLastError()
