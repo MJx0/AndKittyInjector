@@ -64,7 +64,7 @@ target_compile_definitions(AndKittyInjector
 target_compile_options(AndKittyInjector
     PRIVATE
         $<$<CONFIG:Debug>:-O0 -g>
-        $<$<CONFIG:Release>:-O2>
+        $<$<CONFIG:Release>:-O2 -ffunction-sections -fdata-sections>
         -Wall
         -Wextra
         -Werror
@@ -75,6 +75,12 @@ target_compile_options(AndKittyInjector
 # -----------------------------
 # Platform-specific libraries
 # -----------------------------
+target_link_options(AndKittyInjector
+    PRIVATE
+        $<$<CONFIG:Release>:-Wl,--gc-sections>
+        $<$<CONFIG:Release>:-Wl,--strip-all>
+)
+
 if(ANDROID)
     target_link_libraries(AndKittyInjector PRIVATE log $<$<NOT:$<BOOL:${KT_DISABLE_KEYSTONE}>>:${KEYSTONE_LIB}>)
 endif()
