@@ -23,7 +23,7 @@ JOBS=$(($(nproc 2>/dev/null || sysctl -n hw.ncpu || echo 4) / 2))
 # ===============================
 # Validate
 # ===============================
-if [[ -z "NDK_PATH" ]]; then
+if [[ -z "$NDK_PATH" ]]; then
   echo "ERROR: env variable NDK_HOME not set."
   exit 1
 fi
