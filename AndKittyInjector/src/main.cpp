@@ -7,18 +7,18 @@
 #include <cstdint>
 #include <string>
 
-#include <sys/inotify.h>
 #include <sys/types.h>
+#include <sched.h>
 
 #include <chrono>
 #include <vector>
 
 #include "KittyMemoryMgr.hpp"
 
-#include "Utils.hpp"
+#include "Utils/Utils.hpp"
 #include <KittyUtils.hpp>
 
-#include "argsparse.hpp"
+#include "Utils/argsparse.hpp"
 
 #include "Injector/KittyInjector.hpp"
 
@@ -32,7 +32,7 @@
     }
 
 #define kPROGRAM_NAME "AndKittyInjector"
-#define kPROGRAM_VER "5.4.0"
+#define kPROGRAM_VER "6.0.0"
 
 bool inject(int pid,
             const std::vector<std::string> &libs,
@@ -53,6 +53,7 @@ int main(int argc, char *args[])
     int target_pid = 0;
     inject_elf_config_t inj_cfg = {};
 
+    inj_cfg.selinux_state = Utils::selinux_state();
     inj_cfg.sdk = KittyUtils::Android::getSDK();
     inj_cfg.seize = inj_cfg.sdk >= 24;
     inj_cfg.rtdl_flags = RTLD_LOCAL | RTLD_NOW;
@@ -114,7 +115,9 @@ int main(int argc, char *args[])
 
     auto &free_hide_group = program.add_mutually_exclusive_group(false);
     {
-        free_hide_group.add_argument("--free").help("Unload library after entry point execution.").store_into(inj_cfg.free);
+        free_hide_group.add_argument("--free")
+            .help("Unload library after entry point execution.")
+            .store_into(inj_cfg.free);
 
         free_hide_group.add_argument("--hide")
             .help("Remove soinfo from solist/sonext, remap library to anonymouse memory and randomize ELF header.")
@@ -159,28 +162,28 @@ int main(int argc, char *args[])
 
     KITTY_LOGI("======== INJECTION ARGS ========");
     {
+        KITTY_LOGI("SELinux: %s", Utils::selinux_state_tostr(inj_cfg.selinux_state).c_str());
+        KITTY_LOGI("Arch: %s", EMachineToStr(kInjectorEM).c_str());
         if (target_pid != 0)
         {
-            KITTY_LOGI("Process: %d", target_pid);
+            KITTY_LOGI("ProcessId: %d", target_pid);
         }
-        else
-        {
-            KITTY_LOGI("Package: %s", inj_cfg.package.c_str());
-        }
+        KITTY_LOGI("Package: %s", inj_cfg.package.c_str());
         KITTY_LOGI("SDK: %d", inj_cfg.sdk);
         KITTY_LOGI("Launch: %d", inj_cfg.launch ? 1 : 0);
         KITTY_LOGI("Watch: %d", inj_cfg.watch ? 1 : 0);
-        KITTY_LOGI("Breakpoint: %d", inj_cfg.bp);
-        if (!inj_cfg.bp_args.empty())
-        {
-            KITTY_LOGI("Breakpoint-Binary: %s", inj_cfg.bp_args[0].c_str());
-            KITTY_LOGI("Breakpoint-Symbol: %s", inj_cfg.bp_args[1].c_str());
-        }
-        KITTY_LOGI("Delay: %dus", inj_cfg.delay);
-        KITTY_LOGI("Timeout: %dms", inj_cfg.timeout);
         KITTY_LOGI("Memfd: %d", inj_cfg.memfd ? 1 : 0);
         KITTY_LOGI("Free: %d", inj_cfg.free);
         KITTY_LOGI("Hide: %d", inj_cfg.hide ? 1 : 0);
+        KITTY_LOGI("Breakpoint-ld: %d", (inj_cfg.bp && inj_cfg.bp_args.empty()) ? 1 : 0);
+        KITTY_LOGI("Breakpoint-sym: %s",
+                   inj_cfg.bp_args.empty() ? "0"
+                                           : KittyUtils::String::fmt("[Bin=\"%s\"|Sym=\"%s\"]",
+                                                                     inj_cfg.bp_args[0].c_str(),
+                                                                     inj_cfg.bp_args[1].c_str())
+                                                 .c_str());
+        KITTY_LOGI("Delay: %dus", inj_cfg.delay);
+        KITTY_LOGI("Timeout: %dms", inj_cfg.timeout);
         for (size_t i = 0; i < libs.size(); i++)
         {
             KITTY_LOGI("Library[%d]: %s", int(i + 1), libs[i].c_str());
@@ -193,24 +196,6 @@ int main(int argc, char *args[])
 
     if (inj_cfg.launch || inj_cfg.watch)
     {
-        if (KittyMemoryEx::getProcessID(inj_cfg.package) > 0)
-        {
-            Utils::android_stop_app(inj_cfg.package);
-
-            int pid = KittyMemoryEx::getProcessID(inj_cfg.package);
-            if (pid > 0)
-            {
-                kill(pid, SIGKILL);
-            }
-
-            if (KittyMemoryEx::getProcessID(inj_cfg.package) > 0)
-            {
-                KITTY_LOGE("--%s is used but the target process is already alive.",
-                           inj_cfg.launch ? "launch" : "watch");
-                exit(1);
-            }
-        }
-
         KITTY_LOGI("Monitoring %s...", inj_cfg.package.c_str());
 
         injection_ok = inject_watch(libs, inj_cfg, &injected_libs_info);
@@ -230,18 +215,18 @@ int main(int argc, char *args[])
         injection_ok = inject(app_pid, libs, inj_cfg, &injected_libs_info);
     }
 
-    if (!injection_ok && (inj_cfg.launch || inj_cfg.watch))
+    if (!injection_ok)
     {
         KITTY_LOGE("Injection failed.");
-        Utils::android_stop_app(inj_cfg.package);
-        int pid = KittyMemoryEx::getProcessID(inj_cfg.package);
-        if (pid > 0)
+
+        if (inj_cfg.launch || inj_cfg.watch)
         {
-            if (kill(pid, SIGKILL) != -1)
+            if (Utils::android_stop_app(inj_cfg.package))
             {
-                KITTY_LOGI("Killed target process.");
+                KITTY_LOGI("Force stopped target process.");
             }
         }
+
         exit(1);
     }
 
@@ -273,22 +258,10 @@ bool inject(int pid,
     // Manually initialize tracer to seize and interrupt as soon as possible
     kmgr.trace = KittyTraceMgr(pid, 0, true);
 
-    if (kill(pid, SIGSTOP) == -1)
-    {
-        KITTY_LOGE("Failed to stop target process threads!");
-        return false;
-    }
-
-    KITTY_LOGI("Stopped target process threads successfully.");
-
-    // resume main thread only
-    // main thread should be stopped by ptrace attach/seize
-    if (tgkill(pid, pid, SIGCONT) == -1)
-    {
-        KITTY_LOGE("tgkill(%d, SIGCONT) failed. \"%s\".", pid, strerror(errno));
-        return false;
-    }
-
+    // Stop only the main thread (seize + interrupt).
+    // A whole-process SIGSTOP would freeze a sibling that holds g_dl_mutex,
+    // after which our  remote dlopen on the main thread blocks forever on that lock.
+    // Leaving siblings running lets the lock holder finish and release it.
     errno = 0;
     bool attached = cfg.seize = cfg.sdk >= 21 && kmgr.trace.seize(PTRACE_O_EXITKILL | PTRACE_O_TRACESYSGOOD);
     if (!attached)
@@ -324,7 +297,7 @@ bool inject(int pid,
         return false;
     }
 
-    // after interrupting early, we can take out time to initialze the injector.
+    // After interrupting early, we can take our time to initialze the injector.
     KittyInjector injector{};
     if (!kmgr.initialize(pid, EK_MEM_OP_SYSCALL, true) || !injector.init(&kmgr, cfg))
     {
@@ -340,7 +313,7 @@ bool inject(int pid,
     {
         if (!injector.validateElf(it, nullptr, emulate ? nullptr : &emulate))
         {
-            KITTY_LOGI("Failed to validate %s!", it.c_str());
+            KITTY_LOGI("Failed to validate [%s]!", it.c_str());
             kmgr.trace.detach();
             return false;
         }
@@ -348,38 +321,55 @@ bool inject(int pid,
 
     auto tm_start = std::chrono::high_resolution_clock::now();
 
-    if (cfg.bp)
+    if (cfg.bp || emulate)
     {
-        KITTY_LOGI("Setting up breakpoint...");
-
-        if (!injector.waitBreakpoint(emulate))
+        if (!cfg.bp && emulate)
         {
-            KITTY_LOGE("Failed to wait for breakpoint!");
-            kmgr.trace.detach();
-            return false;
-        }
+            KITTY_LOGI("Checking NativeBridgestate...");
 
-        KITTY_LOGI("Breakpoint triggered successfully.");
+            if (!injector.waitNbInit())
+            {
+                KITTY_LOGE("Failed to wait for NativeBridge initialization!");
+                return false;
+            }
+
+            KITTY_LOGI("NativeBridgeState checked successfully.");
+        }
+        else
+        {
+            KITTY_LOGI("Setting up breakpoint...");
+
+            if (!injector.waitBreakpoint(emulate))
+            {
+                KITTY_LOGE("Failed to wait for breakpoint!");
+                kmgr.trace.detach();
+                return false;
+            }
+
+            KITTY_LOGI("Breakpoint triggered successfully.");
+        }
     }
 
-    std::string cmdline;
-    std::string cmdlinePath = KittyUtils::String::fmt("/proc/%d/cmdline", pid);
-    KittyIOFile::readFileToString(cmdlinePath, &cmdline);
-    KITTY_LOGI("Proccess current cmdline (\"%s\").", cmdline.c_str());
+    std::string cmdline, ctx;
+    KittyIOFile::readFileToString(KittyUtils::String::fmt("/proc/%d/attr/current", pid), &ctx);
+    KittyIOFile::readFileToString(KittyUtils::String::fmt("/proc/%d/cmdline", pid), &cmdline);
+    KITTY_LOGI("Process current [cmdline=\"%s\" | context=\"%s\"].",
+               cmdline.empty() ? "" : cmdline.c_str(),
+               ctx.empty() ? "" : ctx.c_str());
 
     for (auto &it : libs)
     {
-        KITTY_LOGI("===== Injecting %s...", it.c_str());
+        KITTY_LOGI("===== Injecting [%s]...", it.c_str());
 
         auto info = injector.inject(it);
         if (!info.is_valid())
         {
-            KITTY_LOGE("===== Failed to inject %s!", it.c_str());
+            KITTY_LOGE("===== Failed to inject [%s]!", it.c_str());
             kmgr.trace.detach();
             return false;
         }
 
-        KITTY_LOGI("===== Successfully injected %s.", it.c_str());
+        KITTY_LOGI("===== Successfully injected [%s].", it.c_str());
 
         out->push_back(info);
     }
@@ -400,14 +390,6 @@ bool inject(int pid,
 
     KITTY_LOGI("Detached from target process successfully.");
 
-    if (kill(pid, SIGCONT) == -1)
-    {
-        KITTY_LOGE("Failed to resume target process threads!");
-        return false;
-    }
-
-    KITTY_LOGI("Resumed target process threads successfully.");
-
     return true;
 }
 
@@ -415,104 +397,86 @@ bool inject_watch(const std::vector<std::string> &libs, inject_elf_config_t &cfg
 {
     bool result = false;
     int pid = 0;
+    int launchTries = 0;
     errno = 0;
-    int inotifyFd = -1;
 
-    if (!cfg.bp)
-    {
-        inotifyFd = inotify_init1(IN_CLOEXEC);
-        if (inotifyFd < 0)
-        {
-            KITTY_LOGE("Failed to initialize inotify. \"%s\".", strerror(errno));
-            exit(1);
-        }
-    }
+    auto launchFresh = [&cfg]() {
+        std::thread([&cfg]() -> void {
+            if (!KittyMemoryEx::getProcessIDs(cfg.package).empty())
+            {
+                Utils::android_stop_app(cfg.package);
+                SLEEP_SECONDS(1); // 1s settle after a force-stop
+            }
+            if (cfg.launch && !Utils::android_launch_app(cfg.package))
+            {
+                KITTY_LOGE("Failed to launch app [%s]!", cfg.package.c_str());
+                exit(1);
+            }
+        }).detach();
+    };
 
     Utils::am_process_start_callback(
-        // init callback
-        [&cfg] {
-            if (cfg.launch)
-            {
-                std::thread([&cfg]() -> void {
-                    // give some time
-                    SLEEP_SECONDS(1);
-                    if (!Utils::android_launch_app(cfg.package))
-                    {
-                        KITTY_LOGE("Failed to launch app %s!", cfg.package.c_str());
-                        exit(1);
-                    }
-                }).detach();
-            }
-        },
+        // init: monitor is live here, so stop/launch can't race the spawn event.
+        [&] { launchFresh(); },
         // process start callback
         [&](const android_event_am_proc_start *event) -> bool {
             if (int(cfg.package.length()) != event->process_name.length)
                 return false;
+
             if (strncmp(event->process_name.data, cfg.package.c_str(), cfg.package.length()))
                 return false;
 
             pid = event->pid.data;
 
-            if (cfg.bp)
+            if (cfg.delay > 0)
             {
-                if (cfg.delay > 0)
+                KITTY_LOGI("Waiting for the delay...");
+                SLEEP_MICROS(cfg.delay);
+            }
+
+            auto spec_begin = std::chrono::steady_clock::now();
+            bool canLog = true;
+            while (true)
+            {
+                bool dead = kill(pid, 0) != 0;
+                bool stuck = std::chrono::steady_clock::now() - spec_begin > std::chrono::seconds(5);
+                if (dead || stuck)
                 {
-                    KITTY_LOGI("Waiting for the delay...");
-                    SLEEP_MICROS(cfg.delay);
+                    canLog = true;
+
+                    KITTY_LOGW("Process %d %s before injection, Still monitoring...", pid, dead ? "exited" : "stalled");
+
+                    pid = 0;
+
+                    if (cfg.launch && ++launchTries <= 5)
+                        launchFresh();
+
+                    return false; // keep monitoring for the next spawn
                 }
 
-                result = inject(pid, libs, cfg, out);
-            }
-            // inject on any event that isn't related to fd or timer
-            // this delays injection for linker init
-            // not used when --bp is used
-            else
-            {
-                auto proc_dir = KittyUtils::String::fmt("/proc/%d", pid);
-                bool proc_dir_watch = Utils::inotify_watch_directory(inotifyFd,
-                                                                     proc_dir,
-                                                                     IN_ALL_EVENTS,
-                                                                     [&](int, struct inotify_event *iev) -> bool {
-                                                                         // skip fd event
-                                                                         if (iev->len >= 2 &&
-                                                                             *(uint16_t *)iev->name == 0x6466)
-                                                                             return false;
+                if (cfg.selinux_state == SELinuxState::Disabled)
+                    break;
 
-                                                                         // skip timerslack event
-                                                                         if (iev->len >= 4 &&
-                                                                             *(uint32_t *)iev->name == 0x656d6974)
-                                                                             return false;
-
-                                                                         if (cfg.delay > 0)
-                                                                         {
-                                                                             KITTY_LOGI("Waiting for the delay...");
-                                                                             SLEEP_MICROS(cfg.delay);
-                                                                         }
-
-                                                                         result = inject(pid, libs, cfg, out);
-
-                                                                         return true;
-                                                                     });
-
-                if (!proc_dir_watch)
+                if (canLog)
                 {
-                    if (inotifyFd > -1)
-                        close(inotifyFd);
-
-                    KITTY_LOGE("Failed to add watch on process directory. last error = %s.", strerror(errno));
-                    exit(1);
+                    KITTY_LOGI("Waiting for app to leave zygote domain...");
+                    canLog = false;
                 }
+
+                if (Utils::is_app_specialized(pid))
+                    break;
+
+                sched_yield();
             }
+
+            result = inject(pid, libs, cfg, out);
 
             return true;
         });
 
-    if (inotifyFd > -1)
-        close(inotifyFd);
-
     if (pid <= 0)
     {
-        KITTY_LOGE("Failed to monitor process start. (\"%s\").", strerror(errno));
+        KITTY_LOGE("Failed to monitor process start. strerror=\"%s\".", strerror(errno));
         exit(1);
     }
 

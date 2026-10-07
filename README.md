@@ -8,6 +8,7 @@ Requires C++17 or newer.<br/>Inject from `/data` on Android.
 
 - [x] Tested on Android 5.0 ~ 17
 - [x] ABI arm, arm64, x86, x86_64
+- [x] Inject early on app specialized
 - [x] Inject emulated arm64 & arm32 via libhoudini.so or libndk_translation.so
 - [x] Inject multiple libs at once
 - [x] Bypass android linker namespace restrictions
@@ -60,10 +61,7 @@ One of `--pid` or `--package` is required. `--libs` accepts one or more paths an
 # Inject into an already-running process by PID.
 ./AndKittyInjector --pid 12345 --libs /data/local/tmp/libtest.so
 
-# Launch the app, then inject two libs, using memfd dlopen, with a 1s delay and 3s remote-call timeout.
-./AndKittyInjector --package com.target.package --launch --memfd --delay 1000000 --timeout 3000 --libs /data/local/tmp/lib1.so /data/local/tmp/lib2.so
-
-# Wait for the app to be launched (by the user or the system) and inject as soon as it appears using memfd dlopen.
+# Wait for the app to be launched (by the user or the system) and inject on app specialized (no --delay) using memfd dlopen.
 ./AndKittyInjector --package com.target.package --watch --memfd --libs /data/local/tmp/libtest.so
 
 # Inject as soon as the first native/emulated dlopen call happens after launch.
@@ -71,6 +69,9 @@ One of `--pid` or `--package` is required. `--libs` accepts one or more paths an
 
 # Inject on a breakpoint at a specific symbol in a specific binary.
 ./AndKittyInjector --package com.target.package --launch --memfd --libs /data/local/tmp/libtest.so --bp-sym /libc.so malloc
+
+# Launch the app, then inject two libs, using memfd dlopen, 1s delay, and 3s remote-call timeout.
+./AndKittyInjector --package com.target.package --launch --memfd --delay 1000000 --timeout 3000 --libs /data/local/tmp/lib1.so /data/local/tmp/lib2.so
 ```
 
 ## Embedding as a library
@@ -113,7 +114,10 @@ kMgr.trace.detach();
 
 ## Notes
 
-- Do not start a thread in the library constructor — use `JNI_OnLoad` instead:
+- For `native` injection, When no --delay or --bp-ld/sym are used then injection will execute right after app is specialized.
+- For `emulated` injection, When no --delay or --bp-ld/sym are used then `NativeBridgeState` will be checked, if its not initialized yet then it will place watch/breakpoint over `NativeBridgeState` or `NativeBridgeCreateNamespace` depending on `NativeBridge` version.
+- Injector will auto call `JNI_OnLoad` after injection or after --hide is completed so its's safer than using library initializers.
+- Prefer not to start a thread in the library constructor, use `JNI_OnLoad` instead:
 
 ```cpp
 extern "C" jint JNIEXPORT JNI_OnLoad(JavaVM* vm, void *key)
@@ -136,9 +140,6 @@ extern "C" jint JNIEXPORT JNI_OnLoad(JavaVM* vm, void *key)
     return JNI_VERSION_1_6;
 }
 ```
-
-- When using `--launch` or `--watch` to inject as soon as the target app launches, you may also need `--bp-ld` / `--bp-sym` or `--delay`, especially when injecting into an emulated (cross-ISA) library.
-- If injection fails, the target app will be force-stopped.
 
 ## Compile
 

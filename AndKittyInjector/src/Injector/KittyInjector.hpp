@@ -1,15 +1,23 @@
 #pragma once
 
+#include <unistd.h>
+#include <signal.h>
+
+#include <sys/syscall.h>
+
+#include <dlfcn.h>
+#include <android/dlext.h>
+
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
 #include <functional>
-
-#include <dlfcn.h>
-#include <android/dlext.h>
+#include <thread>
 
 #include <jni.h>
+
+#include "../Utils/Utils.hpp"
 
 #include "KittyInjectorSyscall.hpp"
 
@@ -55,6 +63,7 @@ struct inject_elf_info_t
 
 struct inject_elf_config_t
 {
+    SELinuxState selinux_state;
     int sdk, rtdl_flags, delay, timeout;
     bool watch, launch, seize, bp, memfd, free, hide;
     std::vector<std::string> bp_args;
@@ -62,8 +71,8 @@ struct inject_elf_config_t
     std::function<void(inject_elf_info_t &injected)> beforeEntryPoint, afterEntryPoint;
 
     inject_elf_config_t()
-        : sdk(0), rtdl_flags(RTLD_LOCAL | RTLD_NOW), delay(0), timeout(0), watch(false), launch(false), seize(false), bp(false),
-          memfd(false), free(false), hide(false), beforeEntryPoint(nullptr), afterEntryPoint(nullptr)
+        : sdk(0), rtdl_flags(RTLD_LOCAL | RTLD_NOW), delay(0), timeout(0), watch(false), launch(false), seize(false),
+          bp(false), memfd(false), free(false), hide(false), beforeEntryPoint(nullptr), afterEntryPoint(nullptr)
     {
     }
 };
@@ -104,6 +113,7 @@ public:
 
     bool validateElf(const std::string &elfPath, KT_ElfW(Ehdr) * hdr, bool *needsNB);
     bool waitBreakpoint(bool needsNB);
+    bool waitNbInit();
     inject_elf_info_t inject(const std::string &elfPath);
 
 private:
@@ -119,9 +129,12 @@ private:
     inline bool canUseMemfd()
     {
         errno = 0;
-        return !(syscall(syscall_memfd_create_n) < 0 && errno == ENOSYS);
+        int fd = (int)syscall(syscall_memfd_create_n, "andkitty", 0u);
+        if (fd < 0)
+            return errno != ENOSYS; // only a missing syscall means memfd is unavailable
+        close(fd);
+        return true;
     }
 
-    // preinit callbacks
-    bool findNbCallbacks(nbItf_data_t *out);
+    bool findNativeBridgeData(nbItf_data_t *out_callbacks, uintptr_t *out_state_ptr);
 };

@@ -29,6 +29,7 @@ set(KEYSTONE_LIB ${KITTYMEMORY_PATH}/Deps/Keystone/libs-android/${CMAKE_ANDROID_
 # -----------------------------
 file(GLOB PROJ_SRC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/Utils/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Injector/*.cpp"
 )
 

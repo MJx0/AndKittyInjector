@@ -112,7 +112,7 @@ public:
         return ret.result.ptr;
     }
 
-    inline bool rmunmap(uintptr_t ptr, uintptr_t size)
+    inline bool rmunmap(uintptr_t ptr, size_t size)
     {
         if (!ptr || !size || !_kMgr || !_kMgr->isMemValid())
             return false;

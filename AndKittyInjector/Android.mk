@@ -13,7 +13,7 @@ LOCAL_CPPFLAGS += -std=c++20 -fexceptions -Wall -Wextra -Werror -DkNO_KEYSTONE #
 
 LOCAL_C_INCLUDES += $(KITTYMEMORY_PATH)
 
-PROJ_SRC = $(wildcard $(LOCAL_PATH)/src/*.cpp) $(wildcard $(LOCAL_PATH)/src/Injector/*.cpp)
+PROJ_SRC = $(wildcard $(LOCAL_PATH)/src/*.cpp) $(wildcard $(LOCAL_PATH)/src/Utils/*.cpp) $(wildcard $(LOCAL_PATH)/src/Injector/*.cpp)
 LOCAL_SRC_FILES := $(PROJ_SRC) $(KITTYMEMORY_SRC)
 
 include $(BUILD_EXECUTABLE)

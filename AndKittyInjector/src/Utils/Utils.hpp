@@ -7,13 +7,24 @@
 #include <array>
 #include <memory>
 #include <cstdio>
+#include <csignal>
 #include <thread>
 #include <chrono>
+#include <sstream>
+#include <vector>
 
 #include <sys/system_properties.h>
 #include <sys/inotify.h>
 
 #include <android/log.h>
+
+enum class SELinuxState
+{
+    Unknown,
+    Enforcing,
+    Permissive,
+    Disabled
+};
 
 namespace Utils
 {
@@ -23,10 +34,13 @@ namespace Utils
 
     bool android_restart_app(const std::string &pkg);
 
-    bool inotify_watch_directory(int fd,
-                                 const std::string &path,
-                                 uint32_t mask,
-                                 std::function<bool(int wd, struct inotify_event *event)> cb);
+    bool kill_process(const std::string &proc);
+
+    // True once the target left the zygote SELinux domain (specialized into its app domain).
+    bool is_app_specialized(int pid);
+
+    SELinuxState selinux_state();
+    std::string selinux_state_tostr(SELinuxState state);
 } // namespace Utils
 
 
@@ -102,5 +116,6 @@ extern "C"
 
 namespace Utils
 {
-    bool am_process_start_callback(std::function<void()> init_cb, std::function<bool(const android_event_am_proc_start *)> cb);
+    bool am_process_start_callback(std::function<void()> init_cb,
+                                   std::function<bool(const android_event_am_proc_start *)> cb);
 } // namespace Utils
