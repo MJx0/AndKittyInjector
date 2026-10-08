@@ -620,7 +620,7 @@ inject_elf_info_t KittyInjector::inject(const std::string &elfPath)
         }
 #endif
 
-        KITTY_LOGE("KittyInjector::inject: Established remote buffer at %p.", (void *)_rbuffer);
+        KITTY_LOGI("KittyInjector::inject: Established remote buffer at %p.", (void *)_rbuffer);
     }
 
 
