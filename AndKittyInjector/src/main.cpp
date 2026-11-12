@@ -13,11 +13,10 @@
 #include <chrono>
 #include <vector>
 
-#include "KittyMemoryMgr.hpp"
-
-#include "Utils/Utils.hpp"
+#include <KittyMemoryMgr.hpp>
 #include <KittyUtils.hpp>
 
+#include "Utils/Utils.hpp"
 #include "Utils/argsparse.hpp"
 
 #include "Injector/KittyInjector.hpp"
