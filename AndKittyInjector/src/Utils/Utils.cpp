@@ -1,6 +1,6 @@
 #include "Utils.hpp"
 
-#include "BinderShellCommand.hpp"
+#include "BinderShell.hpp"
 
 #include <KittyUtils.hpp>
 #include <KittyIOFile.hpp>
@@ -76,24 +76,6 @@ static bool _isValidActivity(const std::string &pkg, const std::string &act)
     return has_dot;
 }
 
-static std::string _resolveActivity(const std::string &pkg)
-{
-    if (!_isValidPackageName(pkg))
-        return "";
-
-    std::string act = _execCmd("cmd package resolve-activity --brief " + pkg + " 2>/dev/null | tail -n 1");
-    if (_isValidActivity(pkg, act))
-        return act;
-
-    // fallback dumpsys
-    act = _execCmd("dumpsys package " + pkg + " | grep -A 2 'android.intent.action.MAIN' | grep -o '" + pkg +
-                   "/[^ ]*' | head -n 1");
-    if (_isValidActivity(pkg, act))
-        return act;
-
-    return "";
-}
-
 static bool _amhasLaunchError(const std::string &result)
 {
     return KittyUtils::String::contains(result, "Error:", false) ||
@@ -104,17 +86,22 @@ static bool _amhasLaunchError(const std::string &result)
 
 static bool _amStartApp(const std::string &pkg)
 {
-    std::string activity = _resolveActivity(pkg);
-    if (activity.empty())
-    {
-        // KITTY_LOGW("amStartApp: Failed to resolve activity for %s", pkg.c_str());
+    if (!_isValidPackageName(pkg))
         return false;
+
+    std::string activity = _execCmd("cmd package resolve-activity --brief " + pkg + " 2>/dev/null | tail -n 1");
+    KittyUtils::String::trim(activity);
+    if (!_isValidActivity(pkg, activity))
+    {
+        // fallback dumpsys
+        activity = _execCmd("dumpsys package " + pkg + " | grep -A 2 'android.intent.action.MAIN' | grep -o '" + pkg +
+                            "/[^ ]*' | head -n 1");
+        KittyUtils::String::trim(activity);
+        if (!_isValidActivity(pkg, activity))
+            return false;
     }
 
-    KittyUtils::String::trim(activity);
     std::string result = _execCmd("am start -n " + activity + " 2>&1");
-    // KITTY_LOGW("amStartApp: %s", result.c_str());
-
     return !_amhasLaunchError(result);
 }
 
@@ -124,7 +111,7 @@ static bool _monkeyLaunchApp(const std::string &pkg)
     return system(cmd.c_str()) == 0;
 }
 
-// am/cmd/monkey. Needs API 24+ (SHELL_COMMAND_TRANSACTION, added in N).
+// Needs API 24+ (SHELL_COMMAND_TRANSACTION, added in N).
 static bool _binderLaunchApp(const std::string &pkg)
 {
     if (KittyUtils::Android::getSDK() < 24)
@@ -133,7 +120,7 @@ static bool _binderLaunchApp(const std::string &pkg)
     // cmd package resolve-activity --brief <pkg>
     std::string activity;
     std::string out;
-    if (BinderShell::run("package", {"resolve-activity", "--brief", pkg}, out))
+    if (BinderShell::Run("package", {"resolve-activity", "--brief", pkg}, out))
     {
         std::stringstream ss(out);
         std::string line;
@@ -146,17 +133,12 @@ static bool _binderLaunchApp(const std::string &pkg)
     }
 
     if (!_isValidActivity(pkg, activity))
-    {
-        // KITTY_LOGW("binderLaunchApp: %s", out.c_str());
         return false;
-    }
 
     // cmd activity start-activity -n <component>
     std::string result;
-    if (BinderShell::run("activity", {"start-activity", "-n", activity}, result) && !_amhasLaunchError(result))
+    if (BinderShell::Run("activity", {"start-activity", "-n", activity}, result) && !_amhasLaunchError(result))
         return true;
-
-    // KITTY_LOGW("binderLaunchApp: %s", result.c_str());
 
     return false;
 }
@@ -168,7 +150,27 @@ namespace Utils
         if (!_isValidPackageName(pkg))
             return false;
 
-        return _binderLaunchApp(pkg) || _amStartApp(pkg) || _monkeyLaunchApp(pkg);
+        if (_binderLaunchApp(pkg))
+        {
+            //KITTY_LOGI("android_launch_app: binder path succeeded.");
+            return true;
+        }
+        //KITTY_LOGI("android_launch_app: binder path failed, trying am.");
+
+        if (_amStartApp(pkg))
+        {
+            //KITTY_LOGI("android_launch_app: am path succeeded.");
+            return true;
+        }
+        //KITTY_LOGI("android_launch_app: am path failed, trying monkey.");
+
+        if (_monkeyLaunchApp(pkg))
+        {
+            //KITTY_LOGI("android_launch_app: monkey path succeeded.");
+            return true;
+        }
+        //KITTY_LOGI("android_launch_app: all paths failed.");
+        return false;
     }
 
     bool android_stop_app(const std::string &pkg)
@@ -179,7 +181,7 @@ namespace Utils
         _execCmd("am force-stop " + pkg + " 2>/dev/null");
         {
             std::string out;
-            BinderShell::run("activity", {"force-stop", pkg}, out);
+            BinderShell::Run("activity", {"force-stop", pkg}, out);
         }
 
         for (int i = 0; i < 250; i++)
