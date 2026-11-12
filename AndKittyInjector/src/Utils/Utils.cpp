@@ -235,10 +235,10 @@ namespace Utils
     bool is_app_specialized(int pid)
     {
         std::string ctx;
-        if (!KittyIOFile::readFileToString(KittyUtils::String::fmt("/proc/%d/attr/current", pid), &ctx))
+        if (!KittyIOFile::readFileToString(KittyUtils::String::fmt("/proc/%d/attr/current", pid), &ctx) || ctx.empty())
             return true; // maybe selinux disabled
 
-        return !ctx.empty() && ctx.find("zygote") == std::string::npos;
+        return ctx.find("zygote") == std::string::npos;
     }
 
     SELinuxState selinux_state()
@@ -247,11 +247,40 @@ namespace Utils
         KittyUtils::String::trim(se);
 
         if (se == "Enforcing")
+        {
             return SELinuxState::Enforcing;
+        }
         else if (se == "Permissive")
+        {
             return SELinuxState::Permissive;
+        }
         else if (se == "Disabled")
+        {
             return SELinuxState::Disabled;
+        }
+        else
+        {
+            int fd = open("/sys/fs/selinux/enforce", O_RDONLY);
+            if (fd >= 0)
+            {
+                char value = '\0';
+                read(fd, &value, 1);
+                close(fd);
+
+                if (value == '1')
+                    return SELinuxState::Enforcing;
+                if (value == '0')
+                    return SELinuxState::Permissive;
+            }
+            else
+            {
+                struct stat st;
+                if (stat("/sys/fs/selinux", &st) != 0)
+                {
+                    return SELinuxState::Disabled;
+                }
+            }
+        }
 
         return SELinuxState::Unknown;
     }
